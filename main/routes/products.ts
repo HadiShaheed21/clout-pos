@@ -9,6 +9,7 @@ import * as dns from 'dns';
 import * as https from 'https';
 import * as net from 'net';
 import { asyncHandler } from '../middleware/async-handler';
+import { recordStockMovement } from '../services/stock-movements';
 
 const MAX_FETCH_BYTES = 10 * 1024 * 1024;
 
@@ -461,7 +462,7 @@ router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
     let query = `SELECT p.id, p.category_id, p.name, p.description, p.price, p.cost, p.sku, p.barcode,
-      p.sale_unit, p.allow_fractional_quantity, p.weight_precision,
+      p.sale_unit, p.allow_fractional_quantity, p.weight_precision, p.quality,
       p.is_active, p.sort_order, p.track_inventory, p.stock_quantity, p.low_stock_threshold,
       p.tax_type, p.tax_rate, p.tax_category_id, p.tax_behavior, p.cb_percent, p.tags, p.deleted_at, p.created_at, p.updated_at,
       CASE WHEN p.image_url IS NULL OR p.image_url = '' THEN 0 ELSE 1 END AS has_image
@@ -734,7 +735,7 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
   try {
     const {
       category_id, name, sku, barcode, description, price, cost_price,
-      sale_unit, allow_fractional_quantity, weight_precision,
+      sale_unit, allow_fractional_quantity, weight_precision, quality,
       tax_category_id, tax_behavior, track_inventory, stock_quantity,
       low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids
     } = req.body;
@@ -748,6 +749,9 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
     if (numericError) return res.status(400).json({ error: numericError });
     const weightedFieldError = validateWeightedProductFields(req.body);
     if (weightedFieldError) return res.status(400).json({ error: weightedFieldError });
+    if (quality !== undefined && quality !== null && (typeof quality !== 'string' || quality.trim().length > 80)) {
+      return res.status(400).json({ error: 'quality must be a string of 80 characters or fewer' });
+    }
 
     if (cb_percent !== undefined && cb_percent !== null) {
       if (typeof cb_percent !== 'number' || !Number.isFinite(cb_percent) || cb_percent < 0 || cb_percent > 100) {
@@ -798,19 +802,24 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
     const insertProduct = db.transaction(() => {
       db.prepare(`
         INSERT INTO products (id, category_id, name, sku, barcode, description, price, cost,
-          sale_unit, allow_fractional_quantity, weight_precision,
+          sale_unit, allow_fractional_quantity, weight_precision, quality,
           tax_type, tax_rate, tax_category_id, tax_behavior, track_inventory, stock_quantity, low_stock_threshold,
           is_active, image_url, sort_order, cb_percent, tags, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         id, normalizeNullableString(category_id), productName, normalizeNullableString(sku), normalizedBarcode, normalizeNullableString(description), price, cost_price || 0,
-        normalizeSaleUnit(sale_unit), allow_fractional_quantity ? 1 : 0, weight_precision ?? 3,
+        normalizeSaleUnit(sale_unit), allow_fractional_quantity ? 1 : 0, weight_precision ?? 3, normalizeNullableString(quality),
         'none', 0, normalizeNullableString(tax_category_id), tax_behavior || 'country_default',
         track_inventory ? 1 : 0, stock_quantity || 0, low_stock_threshold || 0,
         is_active !== false ? 1 : 0, normalizeNullableString(image_url),
         sort_order || 0, cb_percent !== undefined ? cb_percent : null, JSON.stringify(tags || []),
         now(), now()
       );
+      if (track_inventory && Number(stock_quantity || 0) > 0) {
+        recordStockMovement(db, { productId: id, quantityDelta: Number(stock_quantity), previousQuantity: 0,
+          movementType: 'opening', referenceType: 'product', referenceId: id,
+          actorUserId: String((req as any).user.userId), createdAt: now() });
+      }
 
       if (normalizedAddonGroupIds && normalizedAddonGroupIds.length > 0) {
         const insertAgp = db.prepare('INSERT INTO addon_group_product (addon_group_id, product_id) VALUES (?, ?)');
@@ -842,7 +851,7 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
 
     const {
       category_id, name, sku, barcode, description, price, cost_price,
-      sale_unit, allow_fractional_quantity, weight_precision,
+      sale_unit, allow_fractional_quantity, weight_precision, quality,
       tax_category_id, tax_behavior, track_inventory, stock_quantity,
       low_stock_threshold, is_active, image_url, sort_order, cb_percent, tags, addon_group_ids
     } = req.body;
@@ -857,6 +866,9 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
     if (numericError) return res.status(400).json({ error: numericError });
     const weightedFieldError = validateWeightedProductFields(req.body, product);
     if (weightedFieldError) return res.status(400).json({ error: weightedFieldError });
+    if (quality !== undefined && quality !== null && (typeof quality !== 'string' || quality.trim().length > 80)) {
+      return res.status(400).json({ error: 'quality must be a string of 80 characters or fewer' });
+    }
 
     if (tax_behavior !== undefined && tax_behavior !== null && !VALID_TAX_BEHAVIORS.includes(tax_behavior)) {
       return res.status(400).json({ error: `tax_behavior must be one of: ${VALID_TAX_BEHAVIORS.join(', ')}` });
@@ -909,6 +921,7 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
     const hasSaleUnit = hasOwn(req.body, 'sale_unit');
     const hasAllowFractionalQuantity = hasOwn(req.body, 'allow_fractional_quantity');
     const hasWeightPrecision = hasOwn(req.body, 'weight_precision');
+    const hasQuality = hasOwn(req.body, 'quality');
 
     const addonGroupValidation = validateAddonGroupIds(db, addon_group_ids);
     if (addonGroupValidation.error) {
@@ -927,6 +940,7 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
           sale_unit = CASE WHEN @has_sale_unit = 1 THEN @sale_unit ELSE sale_unit END,
           allow_fractional_quantity = CASE WHEN @has_allow_fractional_quantity = 1 THEN @allow_fractional_quantity ELSE allow_fractional_quantity END,
           weight_precision = CASE WHEN @has_weight_precision = 1 THEN @weight_precision ELSE weight_precision END,
+          quality = CASE WHEN @has_quality = 1 THEN @quality ELSE quality END,
           description = CASE WHEN @has_description = 1 THEN @description ELSE description END,
           price = COALESCE(@price, price),
           cost = CASE WHEN @has_cost = 1 THEN @cost ELSE cost END,
@@ -935,7 +949,9 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
           tax_category_id = CASE WHEN @has_tax_category_id = 1 THEN @tax_category_id ELSE tax_category_id END,
           tax_behavior = COALESCE(@tax_behavior, tax_behavior),
           track_inventory = COALESCE(@track_inventory, track_inventory),
-          stock_quantity = COALESCE(@stock_quantity, stock_quantity),
+          -- Stock is changed exclusively by purchases, sales, refunds and the
+          -- audited adjustment endpoint; product edits must never reset it.
+          stock_quantity = stock_quantity,
           low_stock_threshold = COALESCE(@low_stock_threshold, low_stock_threshold),
           is_active = COALESCE(@is_active, is_active),
           image_url = CASE WHEN @has_image_url = 1 THEN @image_url ELSE image_url END,
@@ -959,6 +975,8 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
         allow_fractional_quantity: allow_fractional_quantity ? 1 : 0,
         has_weight_precision: hasWeightPrecision ? 1 : 0,
         weight_precision: weight_precision ?? null,
+        has_quality: hasQuality ? 1 : 0,
+        quality: hasQuality ? normalizeNullableString(quality) : null,
         has_description: hasDescription ? 1 : 0,
         description: normalizeNullableString(description),
         price: price ?? null,
@@ -968,7 +986,6 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
         tax_behavior: tax_behavior ?? null,
         has_tax_category_id: hasTaxCategoryId ? 1 : 0,
         track_inventory: track_inventory ? 1 : track_inventory === 0 || track_inventory === false ? 0 : null,
-        stock_quantity: stock_quantity ?? null,
         low_stock_threshold: low_stock_threshold ?? null,
         is_active: is_active !== undefined ? (is_active ? 1 : 0) : null,
         has_image_url: hasImageUrl ? 1 : 0,
@@ -1039,6 +1056,7 @@ router.post('/:id/stock', requireRole(...ROLE_ACCESS.ownerManager), (req: Reques
       return res.status(404).json({ error: 'Product not found' });
     }
 
+    const previousQuantity = Number((product as { stock_quantity: number }).stock_quantity);
     let result;
     if (action === 'set') {
       result = db.prepare('UPDATE products SET stock_quantity = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL')
@@ -1053,6 +1071,10 @@ router.post('/:id/stock', requireRole(...ROLE_ACCESS.ownerManager), (req: Reques
     if (result.changes === 0) {
       return res.status(400).json({ error: action === 'decrease' ? 'Insufficient stock' : 'Product not found' });
     }
+    const delta = action === 'set' ? quantity - previousQuantity : action === 'increase' ? quantity : -quantity;
+    recordStockMovement(db, { productId: String(req.params.id), quantityDelta: delta, previousQuantity,
+      movementType: 'adjustment', referenceType: 'manual_adjustment', reason: typeof req.body.reason === 'string' ? req.body.reason.slice(0, 500) : null,
+      actorUserId: String((req as any).user.userId), createdAt: now() });
     const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
     res.json({ product: serializeProduct(updated) });
   } catch (error: any) {

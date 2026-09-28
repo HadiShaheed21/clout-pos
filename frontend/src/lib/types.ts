@@ -69,6 +69,7 @@ export interface Product {
   sale_unit: 'each' | 'kg' | 'g' | 'lb';
   allow_fractional_quantity: boolean;
   weight_precision: number;
+  quality?: string | null;
   description: string | null;
   price: number;
   cost_price: number | null;

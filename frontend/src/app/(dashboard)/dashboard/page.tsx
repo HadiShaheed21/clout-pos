@@ -124,6 +124,15 @@ interface Insights {
   idlestDayOfWeek: DayBucket | null;
 }
 
+interface BusinessSummary {
+  sales: number;
+  transactions: number;
+  items_sold: number;
+  expenses: number;
+  net_after_expenses: number;
+  inventory: { total_products: number; in_stock: number; low_stock: number; out_of_stock: number };
+}
+
 /** Today's date as YYYY-MM-DD in a given IANA timezone (not UTC — avoids an
  *  off-by-one-day default near midnight relative to the tenant's locale). */
 function getLocalDateString(date: Date, timeZone: string): string {
@@ -181,6 +190,7 @@ export default function DashboardPage() {
   const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
   const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
   const [insights, setInsights] = useState<Insights | null>(null);
+  const [businessSummary, setBusinessSummary] = useState<BusinessSummary | null>(null);
   const [loading, setLoading] = useState(true);
 
   const isOwner = hasRole(currentTenant?.role, ROLE_ACCESS.owner);
@@ -244,14 +254,16 @@ export default function DashboardPage() {
         signal: controller.signal,
       }),
       api.get('/reports/insights', { params: { days: 30 }, signal: controller.signal }),
+      periodMode === 'day' ? api.get('/reports/business-summary', { params: { date: selectedDate }, signal: controller.signal }) : Promise.resolve(null),
     ])
-      .then(([statsRes, financialRes, topRes, recentRes, insightsRes]) => {
+      .then(([statsRes, financialRes, topRes, recentRes, insightsRes, businessRes]) => {
         setStats(isToday && statsRes ? statsRes.data : null);
         setDaySummary(!isToday && statsRes ? statsRes.data.summary : null);
         setFinancialSummary(financialRes.data.financialSummary);
         setTopProducts(topRes.data.topProducts || []);
         setRecentOrders(recentRes.data.recentOrders || []);
         setInsights(insightsRes.data);
+        setBusinessSummary(businessRes?.data ?? null);
       })
       .catch((err: unknown) => {
         if (err instanceof Error && (err.name === 'CanceledError' || err.name === 'AbortError')) return;
@@ -498,6 +510,13 @@ export default function DashboardPage() {
               </Link>
             ))}
           </div>
+
+          {periodMode === 'day' && businessSummary && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+              <section className="rounded-xl border bg-card p-5"><h2 className="font-semibold mb-4">Today’s business</h2><dl className="space-y-2 text-sm"><div className="flex justify-between"><dt className="text-muted-foreground">Sales</dt><dd className="font-medium">{fmt(businessSummary.sales)}</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Transactions</dt><dd>{businessSummary.transactions}</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Items sold</dt><dd>{businessSummary.items_sold}</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Expenses</dt><dd>{fmt(businessSummary.expenses)}</dd></div><div className="flex justify-between border-t pt-2"><dt className="font-medium">Net after expenses</dt><dd className="font-bold">{fmt(businessSummary.net_after_expenses)}</dd></div></dl></section>
+              <section className="rounded-xl border bg-card p-5"><h2 className="font-semibold mb-4">Inventory</h2><dl className="space-y-2 text-sm"><div className="flex justify-between"><dt className="text-muted-foreground">Products</dt><dd>{businessSummary.inventory.total_products}</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">In stock</dt><dd>{businessSummary.inventory.in_stock}</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Low stock</dt><dd className="text-amber-600 font-medium">{businessSummary.inventory.low_stock}</dd></div><div className="flex justify-between"><dt className="text-muted-foreground">Out of stock</dt><dd className="text-red-600 font-medium">{businessSummary.inventory.out_of_stock}</dd></div></dl><Link href="/products" className="mt-4 inline-block text-sm text-brand font-medium">Manage inventory</Link></section>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {/* Recent Orders */}

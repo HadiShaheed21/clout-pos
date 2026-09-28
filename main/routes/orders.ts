@@ -16,6 +16,7 @@ import { validateOrderNotes, validateItemNotes, validateProductQuantity } from '
 import { requireRole } from '../middleware/security';
 import { ROLE_ACCESS, hasRole } from '../../shared/role-permissions';
 import { getCurrencyFractionDigits, getCurrencyMinorUnitFactor } from '../countries';
+import { recordStockMovement } from '../services/stock-movements';
 import { getTenantCurrency } from './bills';
 import expressRateLimit from 'express-rate-limit';
 
@@ -568,6 +569,8 @@ router.post('/', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: R
         if (product.track_inventory) {
           db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
             .run(quantity, now(), product.id);
+          recordStockMovement(db, { productId: product.id, quantityDelta: -quantity, previousQuantity: product.stock_quantity,
+            movementType: 'sale', referenceType: 'order', referenceId: String(orderId), actorUserId: authenticatedUserId, createdAt: itemCreatedAt });
         }
       }
 
@@ -768,6 +771,8 @@ router.post('/:id/items', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales)
         if (product.track_inventory) {
           db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
             .run(quantity, now(), product.id);
+          recordStockMovement(db, { productId: product.id, quantityDelta: -quantity, previousQuantity: product.stock_quantity,
+            movementType: 'sale', referenceType: 'order', referenceId: String(req.params.id), actorUserId: String((req as any).user.userId), createdAt: now() });
         }
       }
 
@@ -1011,6 +1016,9 @@ router.patch('/:id/status', orderWriteRateLimit, requireRole(...ROLE_ACCESS.orde
             if (product && item.inventory_deducted_quantity > 0) {
               db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
                 .run(item.inventory_deducted_quantity, nowStr, product.id);
+              recordStockMovement(db, { productId: product.id, quantityDelta: item.inventory_deducted_quantity,
+                previousQuantity: product.stock_quantity, movementType: 'sale_cancelled', referenceType: 'order',
+                referenceId: String(req.params.id), actorUserId: String((req as any).user.userId), createdAt: nowStr });
             }
           }
 

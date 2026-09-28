@@ -105,6 +105,7 @@ export default function ProductsPage() {
   const [addonList, setAddonList] = useState<{ id?: number | string; name: string; price: number; is_active?: boolean }[]>([]);
   const [form, setForm] = useState({
     name: '', category_id: '', price: '', cost_price: '', cb_percent: '', sku: '', barcode: '',
+    quality: '',
     sale_unit: 'each' as Product['sale_unit'], allow_fractional_quantity: false, weight_precision: '3',
     tax_category_id: '', tax_behavior: 'country_default', description: '',
     track_inventory: false, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
@@ -253,6 +254,7 @@ export default function ProductsPage() {
   const resetForm = () => {
     setForm({
       name: '', category_id: '', price: '', cost_price: '', cb_percent: '', sku: '', barcode: '',
+      quality: '',
       sale_unit: 'each', allow_fractional_quantity: false, weight_precision: '3',
       tax_category_id: '', tax_behavior: 'country_default', description: '',
       track_inventory: false, stock_quantity: '0', low_stock_threshold: '5', is_active: true,
@@ -295,6 +297,7 @@ export default function ProductsPage() {
       cb_percent: product.cb_percent === null || product.cb_percent === undefined ? '' : String(product.cb_percent),
       sku: product.sku || '',
       barcode: product.barcode || '',
+      quality: product.quality || '',
       sale_unit: product.sale_unit || 'each',
       allow_fractional_quantity: !!product.allow_fractional_quantity,
       weight_precision: String(product.weight_precision ?? 3),
@@ -334,6 +337,7 @@ export default function ProductsPage() {
         cb_percent: cbPercentVal,
         sku: form.sku || null,
         barcode: form.barcode || null,
+        quality: form.quality.trim() || null,
         sale_unit: form.sale_unit,
         allow_fractional_quantity: form.allow_fractional_quantity,
         weight_precision: Number(form.weight_precision),
@@ -341,7 +345,6 @@ export default function ProductsPage() {
         tax_behavior: form.tax_category_id ? form.tax_behavior : 'country_default',
         description: form.description || null,
         track_inventory: form.track_inventory,
-        stock_quantity: Number(form.stock_quantity),
         low_stock_threshold: Number(form.low_stock_threshold),
         is_active: form.is_active,
         tags: form.tags.length > 0 ? form.tags : null,
@@ -353,6 +356,8 @@ export default function ProductsPage() {
       if (imageTouched) {
         payload.image_url = form.image_url; // Can be a data URI or null (to clear)
       }
+
+      if (!editingProduct) payload.stock_quantity = Number(form.stock_quantity);
 
       if (editingProduct) {
         await api.put(`/products/${editingProduct.id}`, payload);
@@ -603,6 +608,7 @@ export default function ProductsPage() {
                     </div>
                     <div>
                       <p className="font-medium text-foreground">{product.name}</p>
+                      {product.quality && <p className="text-xs text-muted-foreground mt-0.5">{product.quality}</p>}
                       {product.sku && <p className="text-xs text-gray-400 mt-0.5">{t('skuLabel', { sku: product.sku })}</p>}
                       {product.barcode && <p className="text-xs text-gray-400 mt-0.5 font-mono">{t('barcodeLabel', { barcode: product.barcode })}</p>}
                       {product.tags && product.tags.length > 0 && (
@@ -764,6 +770,11 @@ export default function ProductsPage() {
                   {barcodeMode === 'auto' && <Button type="button" variant="outline" onClick={() => void generateBarcode()} disabled={generatingBarcode}><WandSparkles size={15} className="me-1" />{generatingBarcode ? 'Generating…' : 'Generate new'}</Button>}
                 </div>
                 <p className="text-xs text-gray-400 mt-2">{barcodeMode === 'auto' ? 'A unique EAN-13 barcode will be ready for your product label.' : t('fieldBarcodeHint')}</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-foreground mb-1">Quality</label>
+                <input type="text" maxLength={80} value={form.quality} onChange={(e) => setForm({ ...form, quality: e.target.value })}
+                  placeholder="e.g. Premium, Grade A" className="w-full px-3 py-2 border border-gray-300 dark:border-border rounded-lg focus:ring-2 focus:ring-brand outline-none" />
               </div>
               {isRestaurant ? <div className="grid grid-cols-3 gap-4">
                 <div>

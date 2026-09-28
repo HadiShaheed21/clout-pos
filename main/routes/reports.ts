@@ -138,6 +138,41 @@ router.get('/daily-stats', requireRole(...ROLE_ACCESS.ownerManager), (req: Reque
   }
 });
 
+// One indexed, timezone-aware endpoint for the owner’s operational overview.
+router.get('/business-summary', requireRole(...ROLE_ACCESS.owner), (req: Request, res: Response) => {
+  try {
+    const date = reportDate(req.query.date, reportToday());
+    if (req.query.date !== undefined && (typeof req.query.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(req.query.date))) {
+      return res.status(400).json({ error: 'date must use YYYY-MM-DD format' });
+    }
+    const [start, end] = reportDayBounds(date);
+    const db = getDatabase();
+    const minorFactor = getCurrencyMinorUnitFactor(getTenantCurrency(db));
+    const sales = db.prepare(`SELECT COUNT(*) AS transactions, COALESCE(SUM(paid_amount), 0) AS gross
+      FROM bills WHERE payment_status = 'paid' AND paid_at >= ? AND paid_at < ?`).get(start, end) as { transactions: number; gross: number };
+    const refunds = db.prepare(`SELECT COALESCE(SUM(CAST(amount_cents AS REAL)) / ?, 0) AS total
+      FROM refunds WHERE created_at >= ? AND created_at < ?`).get(minorFactor, start, end) as { total: number };
+    const items = db.prepare(`SELECT COALESCE(SUM(oi.quantity), 0) AS count FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id WHERE o.status != 'cancelled' AND o.created_at >= ? AND o.created_at < ?`).get(start, end) as { count: number };
+    const expenses = db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM expenses
+      WHERE voided_at IS NULL AND expense_date = ?`).get(date) as { total: number };
+    const inventory = db.prepare(`SELECT COUNT(*) AS total_products,
+      SUM(CASE WHEN track_inventory = 1 AND stock_quantity > low_stock_threshold THEN 1 ELSE 0 END) AS in_stock,
+      SUM(CASE WHEN track_inventory = 1 AND stock_quantity > 0 AND stock_quantity <= low_stock_threshold THEN 1 ELSE 0 END) AS low_stock,
+      SUM(CASE WHEN track_inventory = 1 AND stock_quantity <= 0 THEN 1 ELSE 0 END) AS out_of_stock
+      FROM products WHERE deleted_at IS NULL`).get() as Record<string, number | null>;
+    const netSales = Number(sales.gross) - Number(refunds.total);
+    res.json({ date, sales: netSales, transactions: sales.transactions, items_sold: items.count, expenses: expenses.total,
+      net_after_expenses: netSales - Number(expenses.total), inventory: {
+        total_products: Number(inventory.total_products || 0), in_stock: Number(inventory.in_stock || 0),
+        low_stock: Number(inventory.low_stock || 0), out_of_stock: Number(inventory.out_of_stock || 0),
+      } });
+  } catch (error) {
+    console.error('[API] Could not build business summary:', error);
+    res.status(500).json({ error: 'Unable to build business summary' });
+  }
+});
+
 router.get('/summary', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: Response) => {
   try {
     const db = getDatabase();

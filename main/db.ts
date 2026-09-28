@@ -4089,6 +4089,66 @@ export const MIGRATIONS: { version: number; name: string; up: () => void }[] = [
       insertSettingIfMissing('server_app_bill_printing_enabled', 'false');
     },
   },
+  {
+    version: 84,
+    name: 'inventory_quality_purchases_and_expenses',
+    up: () => {
+      if (!getColumns(db, 'products').includes('quality')) {
+        db.exec('ALTER TABLE products ADD COLUMN quality TEXT');
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS stock_movements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          product_id TEXT NOT NULL REFERENCES products(id),
+          movement_type TEXT NOT NULL CHECK (movement_type IN ('opening', 'purchase', 'sale', 'sale_cancelled', 'refund', 'adjustment')),
+          quantity_delta REAL NOT NULL,
+          quantity_before REAL NOT NULL,
+          quantity_after REAL NOT NULL,
+          reference_type TEXT,
+          reference_id TEXT,
+          reason TEXT,
+          actor_user_id TEXT REFERENCES users(id),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_stock_movements_product_created
+          ON stock_movements(product_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS purchases (
+          id TEXT PRIMARY KEY,
+          supplier TEXT,
+          reference TEXT,
+          purchased_at TEXT NOT NULL,
+          created_by TEXT NOT NULL REFERENCES users(id),
+          total REAL NOT NULL DEFAULT 0 CHECK (total >= 0),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS purchase_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          purchase_id TEXT NOT NULL REFERENCES purchases(id),
+          product_id TEXT NOT NULL REFERENCES products(id),
+          quantity REAL NOT NULL CHECK (quantity > 0),
+          unit_cost REAL NOT NULL CHECK (unit_cost >= 0),
+          total REAL NOT NULL CHECK (total >= 0)
+        );
+        CREATE INDEX IF NOT EXISTS idx_purchase_items_product ON purchase_items(product_id);
+        CREATE TABLE IF NOT EXISTS expenses (
+          id TEXT PRIMARY KEY,
+          amount REAL NOT NULL CHECK (amount > 0),
+          category TEXT NOT NULL,
+          description TEXT,
+          expense_date TEXT NOT NULL,
+          created_by TEXT NOT NULL REFERENCES users(id),
+          voided_at TEXT,
+          voided_by TEXT REFERENCES users(id),
+          void_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_expenses_date_active
+          ON expenses(expense_date) WHERE voided_at IS NULL;
+      `);
+    },
+  },
 ];
 
 function syncBackupBeforeMigration(fromVersion: number, toVersion: number): void {

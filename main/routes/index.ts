@@ -33,6 +33,8 @@ import { heldOrderRoutes } from './held-orders';
 import { printTemplateRoutes } from './print-templates';
 import { whatsappRoutes } from './whatsapp';
 import { supportTicketRoutes } from './support-ticket';
+import { expenseRoutes } from './expenses';
+import { purchaseRoutes } from './purchases';
 import { getDatabase, now, parseItemJson, attachEffectiveAddons, withTxn, getSettingValue, getCachedPairingCode, setCachedPairingCode, verifyPin, recordOrderAudit } from '../db';
 import { checkPinRateLimit } from './orders';
 import { getCurrencyFractionDigits, getCurrencyMinorUnitFactor } from '../countries';
@@ -49,6 +51,7 @@ import { cloudSync } from '../services/cloud-sync';
 import { parsePhoneE164, stripPhoneDigits } from '../lib/phone';
 import QRCode from 'qrcode';
 import { asyncHandler } from '../middleware/async-handler';
+import { recordStockMovement } from '../services/stock-movements';
 import expressRateLimit from 'express-rate-limit';
 
 // Distinguish unregistered store error from cloud connectivity failure.
@@ -106,6 +109,8 @@ export function registerRoutes(app: Express): void {
   app.use('/api/print-templates', printTemplateRoutes);
   app.use('/api/whatsapp', whatsappRoutes);
   app.use('/api/support-ticket', supportTicketRoutes);
+  app.use('/api/expenses', expenseRoutes);
+  app.use('/api/purchases', purchaseRoutes);
 
   // Tax preview
   app.post('/api/tax/preview', asyncHandler(async (req, res) => {
@@ -404,6 +409,9 @@ export function registerRoutes(app: Express): void {
           if (product && currentItem.inventory_deducted_quantity > 0) {
             db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
               .run(currentItem.inventory_deducted_quantity, now(), product.id);
+            recordStockMovement(db, { productId: product.id, quantityDelta: currentItem.inventory_deducted_quantity,
+              previousQuantity: product.stock_quantity, movementType: 'sale_cancelled', referenceType: 'order', referenceId: orderId,
+              actorUserId: actorId, createdAt: now() });
           }
         }
 
@@ -595,6 +603,9 @@ export function registerRoutes(app: Express): void {
           }
           db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
             .run(currentItem.inventory_deducted_quantity, now(), product.id);
+          recordStockMovement(db, { productId: product.id, quantityDelta: -currentItem.inventory_deducted_quantity,
+            previousQuantity: product.stock_quantity, movementType: 'sale', referenceType: 'order', referenceId: orderId,
+            actorUserId: actorId, createdAt: now() });
         }
 
         // Restore - mark as pending
