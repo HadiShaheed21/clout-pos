@@ -337,7 +337,7 @@ export default function ProductsPage() {
         cb_percent: cbPercentVal,
         sku: form.sku || null,
         barcode: form.barcode || null,
-        quality: form.quality.trim() || null,
+        quality: form.quality?.trim() || null,
         sale_unit: form.sale_unit,
         allow_fractional_quantity: form.allow_fractional_quantity,
         weight_precision: Number(form.weight_precision),
