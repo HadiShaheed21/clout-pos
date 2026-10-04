@@ -564,7 +564,7 @@ async function testStandaloneDevServerShutdown(): Promise<void> {
       PORT: '0',
       KDS_PORT: '0',
       SERVER_APP_PORT: '0',
-      FLO_DEV_USER_DATA: devServerDataDir,
+      FLO_DB_PATH: path.join(devServerDataDir, 'flo.db'),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });

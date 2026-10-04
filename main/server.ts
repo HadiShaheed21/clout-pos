@@ -186,6 +186,14 @@ export function startServer(): Promise<void> {
       res.status(db.ok ? 200 : 503).json({
         status: db.ok ? 'ok' : 'error',
         db: db.ok ? 'ok' : db.error,
+        databaseEngine: 'sqlite',
+        databasePath: db.databasePath,
+        schemaVersion: db.schemaVersion,
+        persistentStorage: {
+          configured: db.persistentStorage.configured,
+          required: db.persistentStorage.required,
+          rootPath: db.persistentStorage.rootPath,
+        },
         service: 'Flo Local API',
         version: process.env.npm_package_version || '2.4.7',
         timestamp: new Date().toISOString(),

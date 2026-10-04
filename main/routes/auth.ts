@@ -452,14 +452,14 @@ export function seedSetupProfile(
   }
 }
 
-function isLocalSetupRequest(req: Request): boolean {
+export function isLocalSetupRequest(req: Pick<Request, 'socket' | 'ip'>): boolean {
   const remoteAddress = req.socket.remoteAddress || req.ip || '';
   return LOCAL_SETUP_HOSTS.has(remoteAddress) || remoteAddress.startsWith('127.');
 }
 
 function requireLocalSetup(req: Request, res: Response): boolean {
   if (isLocalSetupRequest(req)) return true;
-  res.status(403).json({ error: 'Initial setup must be completed on the POS computer.' });
+  res.status(403).json({ error: 'Administrator provisioning must be completed on the POS host.' });
   return false;
 }
 
@@ -530,9 +530,71 @@ function resetPasswordChangeRateLimit(userId: string): void {
 }
 // ─────────────────────────────────────────────────────────────────────────────
 
+type LoginFailureStage =
+  | 'database-initialization'
+  | 'owner-count'
+  | 'user-lookup'
+  | 'jwt-secret'
+  | 'token-signing'
+  | 'tenant-loading';
+
+function safeLoginErrorName(value: unknown): string {
+  return typeof value === 'string' && new Set([
+    'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError',
+    'SqliteError', 'DatabaseError', 'JsonWebTokenError',
+  ]).has(value)
+    ? value
+    : 'UnknownError';
+}
+
+const SAFE_LOGIN_ERROR_CODES = new Set([
+  // SQLite database access and schema failures that can occur during login.
+  'SQLITE_AUTH',
+  'SQLITE_BUSY',
+  'SQLITE_CANTOPEN',
+  'SQLITE_CONSTRAINT',
+  'SQLITE_CORRUPT',
+  'SQLITE_ERROR',
+  'SQLITE_FULL',
+  'SQLITE_IOERR',
+  'SQLITE_LOCKED',
+  'SQLITE_NOTADB',
+  'SQLITE_READONLY',
+  'SQLITE_SCHEMA',
+  // Application and Node.js argument errors relevant to database/JWT setup.
+  'ERR_DATABASE_MISSING',
+  'ERR_INVALID_ARG_TYPE',
+  'ERR_INVALID_ARG_VALUE',
+  'ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE',
+]);
+
+function safeLoginErrorCode(value: unknown): string | undefined {
+  return typeof value === 'string' && SAFE_LOGIN_ERROR_CODES.has(value)
+    ? value
+    : undefined;
+}
+
+/** Produces operational diagnostics without logging credentials, records, or tokens. */
+export function getSafeLoginFailureLog(stage: LoginFailureStage, error: unknown): {
+  stage: LoginFailureStage;
+  errorName: string;
+  errorCode?: string;
+} {
+  const candidate = error && typeof error === 'object'
+    ? error as { name?: unknown; code?: unknown }
+    : {};
+  const errorCode = safeLoginErrorCode(candidate.code);
+  return {
+    stage,
+    errorName: safeLoginErrorName(candidate.name),
+    ...(typeof candidate.code === 'string' ? { errorCode: errorCode || 'unavailable' } : {}),
+  };
+}
+
 // ── POST /api/auth/login ──────────────────────────────────────────────────────
 
 router.post('/login', authRateLimit(), asyncHandler(async (req: Request, res: Response) => {
+  let failureStage: LoginFailureStage = 'database-initialization';
   try {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     const rateLimit = checkRateLimit(ip);
@@ -548,6 +610,11 @@ router.post('/login', authRateLimit(), asyncHandler(async (req: Request, res: Re
     }
 
     const db = getDatabase();
+    failureStage = 'owner-count';
+    if (getUserCount(db) === 0) {
+      return res.status(503).json({ error: 'This POS has not been provisioned. Contact the system administrator.' });
+    }
+    failureStage = 'user-lookup';
     const user = db.prepare('SELECT * FROM users WHERE email = ? AND is_active = 1').get(email) as any;
     let passwordMatches = false;
     if (user) {
@@ -570,12 +637,16 @@ router.post('/login', authRateLimit(), asyncHandler(async (req: Request, res: Re
     resetSuccessfulLogin(ip);
 
     const remember = !!rememberMe;
+    failureStage = 'jwt-secret';
+    const jwtSecret = getJWTSecret();
+    failureStage = 'token-signing';
     const token = jwt.sign(
       { userId: user.id, email: user.email, role: user.role, remember, jti: randomUUID() },
-      getJWTSecret(),
+      jwtSecret,
       { expiresIn: expiresInFor(remember) }
     );
 
+    failureStage = 'tenant-loading';
     const tenant = buildLocalTenant(db, user.role);
 
     res.json({
@@ -592,9 +663,8 @@ router.post('/login', authRateLimit(), asyncHandler(async (req: Request, res: Re
       // Single tenant — frontend auto-selects when tenants.length === 1
       tenants: [tenant],
     });
-  } catch (error: any) {
-    console.error('[Auth] Login error:', error);
-    console.error("[API] Internal error:", error);
+  } catch (error: unknown) {
+    console.error('[Auth] Login failed', getSafeLoginFailureLog(failureStage, error));
     res.status(500).json({ error: "Internal server error" });
   }
 }));
@@ -803,10 +873,10 @@ router.post('/recover-password', authRateLimit(), (req: Request, res: Response) 
     if (!requireLocalSetup(req, res)) return;
     const db = getDatabase();
 
-    // First-run setup is the only recovery path when there is no owner yet —
+    // Administrator provisioning is the only recovery path when there is no owner yet —
     // never let this endpoint substitute for /setup/initialize.
     if (getUserCount(db) === 0) {
-      return res.status(409).json({ error: 'Setup has not been completed yet. Use first-run setup to create the owner account.' });
+      return res.status(409).json({ error: 'This POS has not been provisioned. Contact the system administrator.' });
     }
 
     const email = normalizeEmail(req.body?.email);
@@ -878,10 +948,11 @@ router.post('/recover-password', authRateLimit(), (req: Request, res: Response) 
 });
 
 // ── GET /api/auth/setup/status ──────────────────────────────────────────────────
-// Returns whether the app needs setup (no users exist yet)
+// Reports provisioning status for an administrator connected locally to the POS host.
 
-router.get('/setup/status', (_req: Request, res: Response) => {
+router.get('/setup/status', (req: Request, res: Response) => {
   try {
+    if (!requireLocalSetup(req, res)) return;
     const db = getDatabase();
     const userCount = getUserCount(db);
     const needsSetup = userCount === 0;
@@ -899,7 +970,7 @@ router.get('/setup/status', (_req: Request, res: Response) => {
 });
 
 // ── POST /api/auth/setup/initialize ─────────────────────────────────────────────
-// Creates the initial owner user. This endpoint is disabled after any user exists.
+// Creates the initial owner user. This administrator-only endpoint is disabled after any user exists.
 
 router.post('/setup/initialize', (req: Request, res: Response) => {
   try {
@@ -1108,10 +1179,11 @@ router.post('/setup/initialize', (req: Request, res: Response) => {
 });
 
 // ── POST /api/auth/setup/seed ───────────────────────────────────────────────────
-// Legacy endpoint retained to direct callers to /api/auth/setup/initialize.
+// Legacy endpoint retained for local administrators to direct callers to provisioning.
 
 router.post('/setup/seed', (req: Request, res: Response) => {
-  res.status(410).json({ error: 'Use /api/auth/setup/initialize with setup_profile and owner details.' });
+  if (!requireLocalSetup(req, res)) return;
+  res.status(410).json({ error: 'Use /api/auth/setup/initialize to provision the owner account.' });
 });
 
 export const authRoutes = router;

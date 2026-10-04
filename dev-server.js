@@ -26,11 +26,23 @@ if (fs.existsSync(envPath)) {
 
 const path = require('path');
 const os = require('os');
-const devUserDataPath = process.env.FLO_DEV_USER_DATA || __dirname;
+const isProduction = process.env.NODE_ENV === 'production';
+const hasPersistentDatabasePath = Boolean(
+  process.env.FLO_DB_PATH?.trim()
+  || process.env.RAILWAY_VOLUME_MOUNT_PATH?.trim(),
+);
+
+if (isProduction && !hasPersistentDatabasePath) {
+  console.error('[DevServer] Refusing to start production without persistent database storage. Set FLO_DB_PATH to a file on the mounted Railway volume.');
+  process.exit(1);
+}
+const configuredDatabasePath = process.env.FLO_DB_PATH
+  || (process.env.RAILWAY_VOLUME_MOUNT_PATH ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, 'flo.db') : null);
+const devUserDataPath = configuredDatabasePath ? path.dirname(configuredDatabasePath) : __dirname;
 
 // ── Mock Electron's `app` module ──────────────────────────────────────────────
 const mockApp = {
-  isPackaged: Boolean(process.env.FLO_DEV_USER_DATA),
+  isPackaged: isProduction,
   getPath: (name) => {
     if (name === 'userData') return devUserDataPath;
     if (name === 'documents') return os.homedir();

@@ -1,6 +1,7 @@
-import { isAllowedPrivateIp, rateLimit, staticRouteRateLimit } from '../main/middleware/security';
+import { corsOptions, isAllowedPrivateIp, rateLimit, staticRouteRateLimit } from '../main/middleware/security';
 import express from 'express';
 import request from 'supertest';
+import cors from 'cors';
 
 async function run() {
   console.log('Testing CORS IP Validation...');
@@ -41,6 +42,39 @@ async function run() {
 
   // 6. Rate Limiter Bypass Tests
   console.log('Testing Rate Limiter Bypass...');
+  // Railway same-origin deployments declare their public service URL rather
+  // than weakening the authenticated API CORS policy for every origin.
+  const originalAllowedOrigins = process.env.FLO_ALLOWED_ORIGINS;
+  const railwayOrigin = 'https://pos-production-7f58.up.railway.app';
+  process.env.FLO_ALLOWED_ORIGINS = railwayOrigin;
+  await new Promise<void>((resolve, reject) => {
+    corsOptions.origin(railwayOrigin, (error, allowed) => {
+      if (error) return reject(error);
+      assert(allowed === true, 'Configured Railway service origin should be allowed by CORS');
+      resolve();
+    });
+  });
+  await new Promise<void>((resolve) => {
+    corsOptions.origin('https://untrusted.example', (error) => {
+      assert(error?.message === 'Not allowed by CORS', 'Unconfigured public origin should remain rejected');
+      resolve();
+    });
+  });
+  if (originalAllowedOrigins === undefined) delete process.env.FLO_ALLOWED_ORIGINS;
+  else process.env.FLO_ALLOWED_ORIGINS = originalAllowedOrigins;
+
+  process.env.FLO_ALLOWED_ORIGINS = railwayOrigin;
+  const sameOriginLoginApp = express();
+  sameOriginLoginApp.use(cors(corsOptions));
+  sameOriginLoginApp.post('/api/auth/login', (_req, res) => res.json({ reachedLoginRoute: true }));
+  const sameOriginLogin = await request(sameOriginLoginApp)
+    .post('/api/auth/login')
+    .set('Origin', railwayOrigin)
+    .send({ email: 'owner@example.invalid', password: 'not-used-by-this-route' });
+  assert(sameOriginLogin.status === 200, 'Configured Railway-origin login request reaches the login route');
+  assert(sameOriginLogin.body.reachedLoginRoute === true, 'CORS does not replace the Railway login response');
+  if (originalAllowedOrigins === undefined) delete process.env.FLO_ALLOWED_ORIGINS;
+  else process.env.FLO_ALLOWED_ORIGINS = originalAllowedOrigins;
   
   const createRateLimitedApp = (maxRequests: number, ipOverride?: string, extraOptions?: Record<string, any>) => {
     const app = express();

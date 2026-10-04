@@ -1,6 +1,6 @@
-import { Router, Request, Response } from 'express';
+import express, { Router, Request, Response } from 'express';
 import Database from 'better-sqlite3';
-import { captureKitchenStationSecurityState, captureKdsEnabledSetting, captureRestoreProtectedSettings, captureUserSecurityState, captureUserStationSecurityState, getDatabase, getDbPath, createBackup, createBackupUnlocked, getCurrentSchemaVersion, getForeignKeyViolationKeys, isSafeIdentifier, mergeKdsEnabledSetting, mergeRestoreProtectedSettings, mergeUserSecurityState, mergeUserStationSecurityState, throwIfDatabaseMaintenanceAborted, withTxn, withDatabaseMaintenanceLock } from '../db';
+import { captureKitchenStationSecurityState, captureKdsEnabledSetting, captureRestoreProtectedSettings, captureUserSecurityState, captureUserStationSecurityState, getDatabase, getDbPath, createBackup, createBackupUnlocked, getCurrentSchemaVersion, getForeignKeyViolationKeys, isSafeIdentifier, mergeKdsEnabledSetting, mergeRestoreProtectedSettings, mergeUserSecurityState, mergeUserStationSecurityState, restoreBackup, throwIfDatabaseMaintenanceAborted, withTxn, withDatabaseMaintenanceLock } from '../db';
 import { clearInMemoryRevokedTokens, clearUserAuthCache, requireRole } from '../middleware/security';
 import { requireMasterPin } from '../middleware/master-pin';
 import { clearJWTSecretCache } from './auth';
@@ -448,7 +448,9 @@ router.post('/backup', requireRole(...ROLE_ACCESS.owner), requireMasterPin, asyn
   }
 }));
 
-router.get('/download', requireRole(...ROLE_ACCESS.owner), requireMasterPin, asyncHandler(async (req: Request, res: Response) => {
+// Browser deployments do not have Electron safeStorage. Owner authentication is
+// sufficient for a non-destructive, direct snapshot download.
+router.get('/download', requireRole(...ROLE_ACCESS.owner), asyncHandler(async (req: Request, res: Response) => {
   let tempDir: string | null = null;
   try {
     const dbPath = getDbPath();
@@ -473,15 +475,21 @@ router.get('/download', requireRole(...ROLE_ACCESS.owner), requireMasterPin, asy
         if (error) reject(error);
         else resolve();
       };
-      res.once('finish', () => settle());
-      res.once('close', () => settle());
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) {
         onAbort();
         return;
       }
       try {
-        res.download(snapshotPath, filename, (error) => settle(error));
+        res.setHeader('Content-Type', 'application/x-sqlite3');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        const source = fs.createReadStream(snapshotPath);
+        source.once('error', (error) => settle(error));
+        res.once('error', (error) => settle(error));
+        // The source close event means it is safe to remove the temporary
+        // snapshot; the response can finish flushing its already-read bytes.
+        source.once('close', () => settle());
+        source.pipe(res);
       } catch (error) {
         settle(error as Error);
       }
@@ -500,6 +508,36 @@ router.get('/download', requireRole(...ROLE_ACCESS.owner), requireMasterPin, asy
     console.error('[DB Download] Error:', error);
     res.status(500).json({ error: 'Download failed' });
   }
+}));
+
+const WEB_RESTORE_CONFIRMATION = 'RESTORE DATABASE';
+const WEB_RESTORE_MAX_BYTES = '200mb';
+
+// The web service has no Electron keyring. Keep this destructive operation
+// owner-only and require an explicit confirmation header in addition to auth.
+router.post('/restore', requireRole(...ROLE_ACCESS.owner), express.raw({ type: 'application/x-sqlite3', limit: WEB_RESTORE_MAX_BYTES }), asyncHandler(async (req: Request, res: Response) => {
+  if (req.get('x-flo-restore-confirmation') !== WEB_RESTORE_CONFIRMATION) {
+    return res.status(400).json({ error: `Set X-Flo-Restore-Confirmation to ${WEB_RESTORE_CONFIRMATION} to restore a database.` });
+  }
+  if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+    return res.status(400).json({ error: 'Upload a non-empty SQLite backup file.' });
+  }
+
+  await withDatabaseMaintenanceLock(async (signal) => {
+    const uploadDir = fs.mkdtempSync(path.join(path.dirname(getDbPath()), '.flo-restore-upload-'));
+    const uploadPath = path.join(uploadDir, 'restore.db');
+    try {
+      fs.writeFileSync(uploadPath, req.body, { mode: 0o600 });
+      const result = restoreBackup(uploadPath, false, signal);
+      if (!result.success) return res.status(400).json({ error: result.error || 'Backup restore was rejected.' });
+      clearUserAuthCache();
+      clearInMemoryRevokedTokens();
+      clearJWTSecretCache();
+      return res.json({ success: true, mode: result.mode, schemaVersion: result.backupSchemaVersion });
+    } finally {
+      try { fs.rmSync(uploadDir, { recursive: true, force: true }); } catch { }
+    }
+  }, getHttpRequestSignal(req));
 }));
 
 router.get('/tables', requireRole(...ROLE_ACCESS.owner), (req: Request, res: Response) => {

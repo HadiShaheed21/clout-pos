@@ -37,6 +37,7 @@ async function run() {
     const res1 = await request(`http://127.0.0.1:${mainPort}`).get('/api/health');
     assert(res1.status === 200, 'Primary API health check responds with 200');
     assert(res1.body.status === 'ok', 'Primary API health check body is ok');
+    assert(res1.body.databaseEngine === 'sqlite', 'Primary API health check identifies the SQLite engine');
 
     const kdsPort = getKdsPort();
     const res2 = await request(`http://127.0.0.1:${kdsPort}`).get('/api/health');

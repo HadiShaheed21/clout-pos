@@ -13,6 +13,7 @@ import { resolveContainedPath } from './lib/path-containment';
 import { serializeMerchantTemplatePayload, validateMerchantTemplateText } from '../shared/print';
 import { ROLE_KEYS } from '../shared/role-permissions';
 import { getCurrencyFractionDigits } from './countries';
+import { assertPersistentStorageAvailable, getPersistentStorageStatus, type PersistentStorageStatus } from './persistent-storage';
 
 const USER_ROLE_SQL_CHECK = `CHECK (role IN (${ROLE_KEYS.map((role) => `'${role}'`).join(', ')}))`;
 
@@ -361,10 +362,25 @@ function insertSettingIfMissing(key: string, value: string): void {
     .run(key, value, now());
 }
 
-export function getDbHealth(): { ok: boolean; error?: string } {
-  if (!db) return { ok: false, error: 'Database not initialized' };
-  if (dbHealthError) return { ok: false, error: dbHealthError };
-  return { ok: true };
+export interface DatabaseHealth {
+  ok: boolean;
+  error?: string;
+  databasePath?: string;
+  schemaVersion?: number;
+  persistentStorage: PersistentStorageStatus;
+}
+
+export function getDbHealth(): DatabaseHealth {
+  const persistentStorage = getPersistentStorageStatus();
+  const databasePath = getDbPath();
+  if (!db) return { ok: false, error: 'Database not initialized', databasePath, persistentStorage };
+  if (dbHealthError) return { ok: false, error: dbHealthError, databasePath, persistentStorage };
+  return {
+    ok: true,
+    databasePath,
+    schemaVersion: Number(db.pragma('user_version', { simple: true })),
+    persistentStorage,
+  };
 }
 
 export function getDbPath(): string {
@@ -643,6 +659,7 @@ function recoverInterruptedDatabaseReplacement(dbPath: string, backupDir: string
 
 export function initDatabase(recoverInterruptedReplacement = true, allowDuringShutdown = false): void {
   if (databaseShutdownRequested && !allowDuringShutdown) throw createDatabaseShutdownError();
+  assertPersistentStorageAvailable();
   const dbPath = getDbPath();
   const backupDir = getBackupDir();
 

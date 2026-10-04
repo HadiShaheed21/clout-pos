@@ -31,7 +31,7 @@ Module._load = function (request: string, parent: unknown, isMain: boolean) {
 const express = require('express');
 const { initDatabase, getDatabase, closeDatabase, getCurrentSchemaVersion, MIGRATIONS } = require('../main/db');
 const { cloudSync } = require('../main/services/cloud-sync');
-const { authRoutes } = require('../main/routes/auth');
+const { authRoutes, isLocalSetupRequest } = require('../main/routes/auth');
 
 function count(table: string): number {
   const db = getDatabase();
@@ -69,6 +69,17 @@ function isNativeAbiMismatch(error: any): boolean {
 async function main() {
   console.log('🧪 FloDesktop First-Run Setup Tests');
   console.log('='.repeat(60));
+
+  assert.equal(
+    isLocalSetupRequest({ socket: { remoteAddress: '203.0.113.10' }, ip: '203.0.113.10' }),
+    false,
+    'remote clients cannot access administrator provisioning routes',
+  );
+  assert.equal(
+    isLocalSetupRequest({ socket: { remoteAddress: '127.0.0.1' }, ip: '127.0.0.1' }),
+    true,
+    'the POS host can access administrator provisioning routes',
+  );
 
   let profileRefreshes = 0;
   const originalRefreshRegistrationProfile = cloudSync.refreshRegistrationProfile.bind(cloudSync);
@@ -218,8 +229,10 @@ assert.equal(getCurrentSchemaVersion(), MIGRATIONS[MIGRATIONS.length - 1].versio
     assert.equal(first.data.user.email, 'owner@example.com');
     assert.equal(first.data.user.role, 'owner');
     assert.equal(count('users'), 1, 'setup creates the first owner');
-    const ownerRow = getDatabase().prepare('SELECT terms_accepted_at FROM users WHERE email = ?').get('owner@example.com') as { terms_accepted_at: string | null };
+    const ownerRow = getDatabase().prepare('SELECT terms_accepted_at, password FROM users WHERE email = ?').get('owner@example.com') as { terms_accepted_at: string | null; password: string };
     assert.ok(ownerRow.terms_accepted_at, 'terms acceptance is stamped with a timestamp on the owner record');
+    assert.notEqual(ownerRow.password, 'TestPass123', 'owner passwords are never stored in plaintext');
+    assert.match(ownerRow.password, /^\$2[aby]\$/, 'owner passwords use bcrypt hashes');
     assert.equal(setting('business_name'), 'First Cafe');
     assert.equal(setting('business_type'), 'restaurant');
     assert.equal(setting('setup_profile'), 'express');
@@ -240,6 +253,24 @@ assert.equal(getCurrentSchemaVersion(), MIGRATIONS[MIGRATIONS.length - 1].versio
     assert.equal(count('tables'), 0, 'qsr express setup does not seed dine-in tables');
     assert.equal(count('customers'), 0, 'express setup does not seed demo customers');
     console.log('   ✓ setup endpoint creates owner and applies express QSR setup');
+
+    // The same database is reopened on every process start. It must retain the
+    // owner and setup data so the next browser load can authenticate normally.
+    closeDatabase();
+    initDatabase();
+    const afterRestart = await request(baseUrl, '/setup/status');
+    assert.equal(afterRestart.status, 200);
+    assert.equal(afterRestart.data.needsSetup, false, 'a database with an owner does not return to setup after restart');
+    assert.equal(count('users'), 1, 'owner account survives database restart');
+    assert.equal(count('products'), 4, 'seeded products survive database restart');
+    assert.equal(setting('business_name'), 'First Cafe', 'settings survive database restart');
+    const loginAfterRestart = await request(baseUrl, '/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'owner@example.com', password: 'TestPass123' }),
+    });
+    assert.equal(loginAfterRestart.status, 200, 'the provisioned owner can log in after restart');
+    assert.equal(loginAfterRestart.data.user.role, 'owner');
+    console.log('   ✓ completed setup and business data survive database restart');
 
     // Setup initialize should be disabled since a user already exists
     const second = await request(baseUrl, '/setup/initialize', {

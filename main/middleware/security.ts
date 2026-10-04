@@ -364,9 +364,11 @@ export const corsOptions = {
       const parsedOrigin = new URL(origin);
       const hostname = parsedOrigin.hostname;
 
-      const allowedPublicOrigins = new Set([
-        'https://pos-psi-brown.vercel.app',
-      ]);
+      const configuredPublicOrigins = (process.env.FLO_ALLOWED_ORIGINS || '')
+        .split(',')
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const allowedPublicOrigins = new Set(configuredPublicOrigins);
 
       if (
         allowedPublicOrigins.has(parsedOrigin.origin) ||

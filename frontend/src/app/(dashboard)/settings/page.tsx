@@ -693,6 +693,24 @@ export default function SettingsPage() {
     setPinGate({ mode: 'backup' });
   };
 
+  const handleDownloadDatabase = async () => {
+    try {
+      const response = await api.get('/db/download', { responseType: 'blob' });
+      const blob = new Blob([response.data], { type: 'application/x-sqlite3' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `flo-database-${new Date().toISOString().replace(/[:.]/g, '-')}.db`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      toast.success(t('databaseBackupDownloaded'));
+    } catch {
+      toast.error(t('databaseBackupDownloadFailed'));
+    }
+  };
+
   // Prompt native file dialog to export a backup to a custom directory.
   const handleChooseBackupLocation = async () => {
     if (masterPinStatus.available && !masterPinStatus.isSet) {
@@ -5064,6 +5082,12 @@ export default function SettingsPage() {
                   className="px-5 py-2 text-sm bg-muted text-foreground rounded-lg hover:bg-muted font-medium"
                 >
                   {t('chooseBackupLocation')}
+                </button>
+                <button
+                  onClick={handleDownloadDatabase}
+                  className="px-5 py-2 text-sm bg-muted text-foreground rounded-lg hover:bg-muted font-medium"
+                >
+                  {t('downloadDatabaseBackup')}
                 </button>
               </div>
             </div>

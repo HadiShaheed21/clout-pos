@@ -1,17 +1,16 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useTranslations } from 'use-intl';
 import { useAuthStore } from '@/store/auth';
-import api from '@/lib/api';
 import { showPrintLanguageLoadErrorsToast } from '@/lib/printer/warnings-toast';
 
 export function getLandingPage(): string {
   return '/pos';
 }
 
-const PUBLIC_PATHS = ['/kds', '/kds-standalone', '/server-standalone', '/auth/login', '/auth/register', '/auth/recover', '/setup', '/retail-preview'];
+const PUBLIC_PATHS = ['/kds', '/kds-standalone', '/server-standalone', '/auth/login', '/auth/register', '/auth/recover', '/retail-preview'];
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const t = useTranslations('common');
@@ -19,10 +18,8 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const printLanguageLoadErrors = useAuthStore((s) => s.printLanguageLoadErrors);
   const router = useRouter();
   const pathname = usePathname();
-  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null); // null = still checking
 
   const isPublicPath = PUBLIC_PATHS.some(p => pathname === p || pathname?.startsWith(p + '/'));
-  const isSetupPath = pathname === '/setup' || pathname?.startsWith('/setup/');
   const isStandalonePath = pathname?.startsWith('/kds') || pathname?.startsWith('/server-standalone');
   const isPreviewPath = pathname === '/retail-preview';
   const bypassPosAuthentication = isStandalonePath || isPreviewPath;
@@ -38,50 +35,25 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     showPrintLanguageLoadErrorsToast(printLanguageLoadErrors);
   }, [printLanguageLoadErrors]);
 
-  // Single effect: determine where to redirect after auth state + setup status are known
+  // The initial owner is provisioned by an administrator on the POS host. Client
+  // browsers always enter through the normal authentication flow.
   useEffect(() => {
     if (loading) return; // wait for auth state to load
 
-    // If we don't know setup status yet, fetch it
-    if (!bypassPosAuthentication && needsSetup === null) {
-      const controller = new AbortController();
-      let active = true;
-      api.get('/auth/setup/status', { signal: controller.signal })
-        .then(({ data }) => {
-          if (active) setNeedsSetup(data.needsSetup);
-        })
-        .catch((err) => {
-          if (!active || (err instanceof Error && (err.name === 'CanceledError' || err.name === 'AbortError'))) return;
-          console.error('[AuthGuard] Failed to check setup status:', err);
-          // Fail closed: do not allow normal app routes when setup state is unknown.
-          setNeedsSetup(true);
-        });
-      return () => {
-        active = false;
-        controller.abort();
-      }; // wait for the result before redirecting
-    }
+    if (isPublicPath || bypassPosAuthentication) return;
 
-    if (needsSetup && !isSetupPath) {
-      router.push('/setup');
-      return;
-    }
-
-    if (isPublicPath) return; // don't redirect from public paths unless setup is needed
-
-    // Auth loaded + setup status known + not on public path
     if (!user) {
       router.push('/auth/login');
     } else if (!currentTenant) {
       router.push('/auth/login?select_tenant=true');
     }
-  }, [loading, user, currentTenant, isPublicPath, isSetupPath, bypassPosAuthentication, needsSetup, router]);
+  }, [loading, user, currentTenant, isPublicPath, bypassPosAuthentication, router]);
 
-  if (bypassPosAuthentication || isSetupPath) {
+  if (bypassPosAuthentication) {
     return <>{children}</>;
   }
 
-  if (loading || needsSetup === null || needsSetup === true) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-muted">
         <div className="flex flex-col items-center gap-3">

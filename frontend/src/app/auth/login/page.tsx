@@ -38,13 +38,6 @@ function LoginContent() {
   const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
-    fetch('/api/auth/setup/status')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.needsSetup) router.replace('/setup');
-      })
-      .catch(() => {});
-
     fetch('/api/health')
       .then(r => r.ok ? r.json() : null)
       .then(data => {
@@ -53,7 +46,7 @@ function LoginContent() {
         }
       })
       .catch(() => {});
-  }, [router, t]);
+  }, [t]);
 
   useEffect(() => {
     loadFromStorage();
@@ -109,12 +102,13 @@ function LoginContent() {
         } else if (failure.status === 429) {
           // Middleware-level lockout (authRateLimit window exhausted)
           setLoginError(t('lockedOut', { minutes: 15 }));
+        } else if (failure.status === 503) {
+          setLoginError(t('provisioningRequired'));
         } else if (failure.status === undefined) {
           // No HTTP response at all: the server was unreachable (network).
           setLoginError(t('connectionFailed'));
         } else {
-          // Other server-side failures belong under the database/setup banner.
-          setDbError(t('loginFailed'));
+          setLoginError(t('loginUnavailable'));
         }
       }
     } finally {

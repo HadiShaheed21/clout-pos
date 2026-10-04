@@ -4,6 +4,7 @@
  */
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const Module = require('module');
 const path = require('node:path');
 const frontendRequire = Module.createRequire(path.join(process.cwd(), 'frontend/package.json'));
@@ -36,6 +37,12 @@ async function run() {
 
   assert.equal(parseLoginFailure({ response: { status: 429, data: { error: 'Too many attempts' } } }).status, 429, '429 status parsed');
   assert.equal(parseLoginFailure({ response: { status: 500, data: { error: 'Internal server error' } } }).status, 500, '500 status parsed');
+
+  const loginPageSource = fs.readFileSync(path.join(process.cwd(), 'frontend/src/app/auth/login/page.tsx'), 'utf8');
+  assert.match(loginPageSource, /setLoginError\(t\('loginUnavailable'\)\)/, 'unexpected login HTTP errors use a neutral user-facing message');
+  assert.doesNotMatch(loginPageSource, /setDbError\(t\('loginFailed'\)\)/, 'unexpected login HTTP errors are not mislabelled as database failures');
+  assert.match(loginPageSource, /setLoginError\(t\('provisioningRequired'\)\)/, 'unprovisioned POS responses use an authentication message, not a database error');
+  assert.doesNotMatch(loginPageSource, /setDbError\(t\('provisioningRequired'\)\)/, 'unprovisioned POS responses are not labelled as database errors');
 
   // ── 2. Storage-write failure surfaces StorageUnavailableError and leaves state logged out ──
   const serverApi = {

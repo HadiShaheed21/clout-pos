@@ -93,7 +93,7 @@ const PRINT_LABELS: Record<PrintLabelLanguage, PrintLabelTable> = {
     'receipt.serviceCharge': "Service Charge",
     'receipt.taxDetails': "Tax Details",
     'receipt.payments': "Payments",
-    'receipt.thankYou': "Thank you for shopping with Hadi POS!",
+    'receipt.thankYou': "Thank you for your visit!",
     'receipt.taxIncluded': "Tax included where applicable",
     'receipt.reprint': "REPRINT",
     'receipt.onlineOrder': "ONLINE ORDER",

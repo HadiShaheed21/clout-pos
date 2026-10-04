@@ -1,5 +1,7 @@
 [build]
-buildCommand = "npm run build:frontend && npm run build"
+# Railway is a headless Node service. Skip Electron's desktop-only postinstall
+# hook, then explicitly build the native SQLite binding for Railway's Node ABI.
+buildCommand = "npm ci --include=dev --ignore-scripts && npm rebuild better-sqlite3 --build-from-source && npm run build:frontend && npm run build"
 
 [deploy]
 startCommand = "node dev-server.js"
