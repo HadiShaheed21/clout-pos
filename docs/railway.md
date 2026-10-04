@@ -116,6 +116,22 @@ Do not place a password in a command line, Git repository, or shared terminal
 history. Give the initial password to the client through a secure channel; the
 existing authenticated password-change API lets a signed-in user replace it.
 
+### One-time owner password recovery
+
+For a headless Railway service where Electron Master PIN storage is unavailable,
+an administrator can perform one emergency owner-password reset from inside the
+service container. Before starting the service for this purpose, set a private
+`FLO_OWNER_RECOVERY_TOKEN` value of at least 32 characters in Railway; never
+place it in source control, a command line, or a shared terminal transcript.
+
+From an authenticated Railway SSH shell, send `email`, `new_password`, and
+`recovery_token` to `POST http://127.0.0.1:${PORT}/api/auth/recovery/owner-reset`.
+The endpoint accepts loopback requests only, updates only an existing active
+owner account, invalidates existing sessions, and records permanent one-time
+use in the SQLite settings table. It cannot create an account or be used again
+after success. Remove `FLO_OWNER_RECOVERY_TOKEN` from Railway after recovery,
+then have the owner sign in and change the temporary password normally.
+
 Each client must use a **separate Railway service and separate persistent
 volume**. SQLite is one database per deployment, not a multi-tenant database:
 sharing `/data/flo.db` or a volume between clients is not supported and risks

@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt, { SignOptions } from 'jsonwebtoken';
-import { randomBytes, randomUUID } from 'crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { getCountryCallingCode, type CountryCode } from 'libphonenumber-js';
 import { getCurrentSchemaVersion, getDatabase, getSettingValue, now } from '../db';
 import { authorizeMasterPin, isMasterPinAvailable, setMasterPin } from '../services/master-pin';
@@ -34,6 +34,8 @@ const VALID_BUSINESS_TYPES = new Set(['restaurant', 'fashion_retail']);
 const VALID_SETUP_PROFILES = new Set(['empty', 'express', 'demo']);
 const VALID_SERVICE_MODELS = new Set(['qsr', 'finedine']);
 const LOCAL_SETUP_HOSTS = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+const HOST_OWNER_RECOVERY_USED_AT_SETTING = 'host_owner_recovery_used_at';
+const MIN_HOST_OWNER_RECOVERY_TOKEN_LENGTH = 32;
 
 /** Lazy-loaded JWT secret stored in settings table, generated on first launch. */
 let _jwtSecret: string | null = null;
@@ -461,6 +463,19 @@ function requireLocalSetup(req: Request, res: Response): boolean {
   if (isLocalSetupRequest(req)) return true;
   res.status(403).json({ error: 'Administrator provisioning must be completed on the POS host.' });
   return false;
+}
+
+function hostOwnerRecoveryTokenMatches(candidate: unknown): boolean {
+  const configured = process.env.FLO_OWNER_RECOVERY_TOKEN;
+  if (
+    typeof configured !== 'string'
+    || configured.length < MIN_HOST_OWNER_RECOVERY_TOKEN_LENGTH
+    || typeof candidate !== 'string'
+  ) return false;
+
+  const configuredDigest = createHash('sha256').update(configured).digest();
+  const candidateDigest = createHash('sha256').update(candidate).digest();
+  return timingSafeEqual(configuredDigest, candidateDigest);
 }
 
 // ── Rate Limiting (In-Memory for local offline apps) ──────────────────────────
@@ -944,6 +959,70 @@ router.post('/recover-password', authRateLimit(), (req: Request, res: Response) 
     console.error('[Auth] Password recovery error:', error);
     console.error("[API] Internal error:", error);
     res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// ── POST /api/auth/recovery/owner-reset ──────────────────────────────────────
+// One-time host-local recovery for headless deployments without Electron keyring support.
+
+router.post('/recovery/owner-reset', authRateLimit({ max: 3 }), (req: Request, res: Response) => {
+  try {
+    if (!requireLocalSetup(req, res)) return;
+    const db = getDatabase();
+    const consumed = db.prepare('SELECT 1 FROM settings WHERE key = ?').get(HOST_OWNER_RECOVERY_USED_AT_SETTING);
+    if (consumed) {
+      return res.status(410).json({ error: 'Host owner recovery has already been used for this installation.' });
+    }
+
+    const email = normalizeEmail(req.body?.email);
+    const { new_password, recovery_token } = req.body || {};
+    if (!email || !isValidEmail(email)) {
+      return res.status(400).json({ error: 'A valid email is required' });
+    }
+    if (typeof new_password !== 'string' || !validatePassword(new_password)) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number.' });
+    }
+    if (!hostOwnerRecoveryTokenMatches(recovery_token)) {
+      return res.status(403).json({ error: 'Host owner recovery is not authorized.' });
+    }
+
+    const owner = db.prepare(
+      'SELECT id FROM users WHERE email = ? AND role = ? AND is_active = 1',
+    ).get(email, INITIAL_ADMIN_ROLE) as { id: string } | undefined;
+    if (!owner) {
+      return res.status(404).json({ error: 'No active owner account found with that email on this installation.' });
+    }
+
+    const hashedPassword = bcrypt.hashSync(new_password, 10);
+    const changedAt = now();
+    db.transaction(() => {
+      const alreadyConsumed = db.prepare('SELECT 1 FROM settings WHERE key = ?').get(HOST_OWNER_RECOVERY_USED_AT_SETTING);
+      if (alreadyConsumed) throw new Error('HOST_OWNER_RECOVERY_CONSUMED');
+
+      const updated = db.prepare(`
+        UPDATE users SET password = ?, tokens_valid_after = ?, updated_at = ?
+        WHERE id = ? AND role = ? AND is_active = 1
+      `).run(hashedPassword, changedAt, changedAt, owner.id, INITIAL_ADMIN_ROLE);
+      if (updated.changes !== 1) throw new Error('HOST_OWNER_RECOVERY_OWNER_CHANGED');
+
+      upsertSettings(db, { [HOST_OWNER_RECOVERY_USED_AT_SETTING]: changedAt });
+    })();
+    invalidateUserAuthCache(owner.id);
+
+    console.warn('[Auth] One-time host owner recovery completed');
+    res.json({ message: 'Owner password reset successfully. Sign in, then change the temporary password.' });
+  } catch (error: unknown) {
+    const code = error instanceof Error ? error.message : 'UNKNOWN';
+    if (code === 'HOST_OWNER_RECOVERY_CONSUMED') {
+      return res.status(410).json({ error: 'Host owner recovery has already been used for this installation.' });
+    }
+    if (code === 'HOST_OWNER_RECOVERY_OWNER_CHANGED') {
+      return res.status(409).json({ error: 'Owner account changed during recovery. Try again.' });
+    }
+    console.error('[Auth] Host owner recovery failed', {
+      errorName: error instanceof Error && error.name === 'Error' ? 'Error' : 'UnknownError',
+    });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
