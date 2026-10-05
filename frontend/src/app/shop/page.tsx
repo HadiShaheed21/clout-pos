@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { ArrowRight } from 'lucide-react';
 import { ApiProductSection } from '@/components/shop/ApiProductSection';
 import { ApiCollectionsIndex } from '@/components/shop/ApiCollections';
-import { PlaceholderImage } from '@/components/shop/PlaceholderImage';
 
 export const metadata: Metadata = {
   title: 'Streetwear, built to last',
@@ -24,8 +23,8 @@ export default function ShopHomePage() {
     <>
       {/* Hero: full-bleed editorial statement with a single call to action. */}
       <section className="border-b clout-rule">
-        <div className="mx-auto grid max-w-[1440px] gap-10 px-5 py-16 sm:px-8 lg:grid-cols-12 lg:gap-14 lg:py-24">
-          <div className="lg:col-span-7">
+        <div className="mx-auto max-w-[1440px] px-5 py-16 sm:px-8 lg:py-24">
+          <div className="max-w-3xl">
             <p className="clout-eyebrow">Kerala, made in small runs</p>
             <h1 className="clout-display mt-6 text-[clamp(2.75rem,8vw,6rem)]">
               Built to
@@ -48,15 +47,6 @@ export default function ShopHomePage() {
                 New arrivals
               </Link>
             </div>
-          </div>
-
-          <div className="lg:col-span-5">
-            <PlaceholderImage
-              editorial={{ tone: '#1B3156', accent: '#0B1A31' }}
-              alt="CLOUT editorial campaign artwork"
-              seed="clout-hero"
-              ratio="aspect-[4/5] lg:aspect-[3/4]"
-            />
           </div>
         </div>
       </section>

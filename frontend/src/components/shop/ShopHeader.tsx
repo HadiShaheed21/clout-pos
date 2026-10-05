@@ -10,8 +10,6 @@ import { useShopCartStore } from '@/store/shop-cart-store';
 
 const NAV_LINKS = [
   { href: '/shop/c/men', label: 'Men' },
-  { href: '/shop/c/women', label: 'Women' },
-  { href: '/shop/c/kids', label: 'Kids' },
   { href: '/shop/collections', label: 'Collections' },
 ];
 

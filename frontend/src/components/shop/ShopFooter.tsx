@@ -8,8 +8,6 @@ const FOOTER_GROUPS = [
     title: 'Shop',
     links: [
       { href: '/shop/c/men', label: 'Men' },
-      { href: '/shop/c/women', label: 'Women' },
-      { href: '/shop/c/kids', label: 'Kids' },
       { href: '/shop/collections', label: 'Collections' },
     ],
   },
