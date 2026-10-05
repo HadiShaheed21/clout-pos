@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import api from '@/lib/api';
 import { useAuthStore } from '@/store/auth';
 import { Button } from '@/components/ui/button';
@@ -686,6 +687,9 @@ export default function ProductsPage() {
                   <div className="flex gap-2 justify-end">
                     {isOwnerOrManager && (
                       <>
+                        <Link href={`/products/catalogue?id=${product.id}`} className="p-1.5 text-gray-400 hover:text-brand" title="Catalogue variants and publishing">
+                          <Package size={16} />
+                        </Link>
                         <button onClick={() => openEdit(product)} className="p-1.5 text-gray-400 hover:text-brand">
                           <Pencil size={16} />
                         </button>

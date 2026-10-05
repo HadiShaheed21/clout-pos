@@ -235,7 +235,8 @@ export function buildTaxBillBytes(
 
   const items = order?.items ?? [];
   for (const item of items) {
-    const line = `${item.product_name}`;
+    const variantLabel = item.variant_selection?.display_name || item.variant_selection?.sku || '';
+    const line = `${item.product_name}${variantLabel ? ` · ${variantLabel}` : ''}`;
     const amount = formatAmount(item.total, currency, amountLocale, trimDecimals, rawEscPos);
 
     writeSafeFinancialRow(line, amount);

@@ -1793,7 +1793,8 @@ export function itemAmountWidth(
 
 export function itemRows(item: any, nameLen: number, amtLen: number, cols: number, prefix: string, locale: string = 'en-US', trimDecimals: boolean = false, language: string = 'en', fractionDigits: number = 2, capabilities?: ThermalPrinterCapabilities): string[] {
   const qtyW = 4;
-  const productName = normalizeThermalText(item.product_name, capabilities);
+  const variantLabel = item.variant_selection?.display_name || item.variant_selection?.sku || '';
+  const productName = normalizeThermalText(`${item.product_name}${variantLabel ? ` · ${variantLabel}` : ''}`, capabilities);
   const amount = formatCurrency(item.total, prefix, locale, trimDecimals, fractionDigits);
   const qty = String(item.quantity).padEnd(qtyW);
   const maxLine1Name = Math.max(1, nameLen - 1);

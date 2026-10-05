@@ -80,6 +80,7 @@ const ORDER_TYPE_KEYS = {
   dine_in: 'dineIn',
   takeaway: 'takeaway',
   delivery: 'delivery',
+  offline: 'offline',
   online: 'online',
 } as const satisfies Record<Order['type'], OrdersKey>;
 
@@ -123,6 +124,7 @@ interface DiscountModal {
 
 export default function OrdersPage() {
   const { currentTenant, user } = useAuthStore();
+  const isRetail = currentTenant?.business_type === 'fashion_retail';
   const { printBill } = usePrinterStore();
   const heldOrdersStore = useHeldOrdersStore();
   const router = useRouter();
@@ -432,9 +434,11 @@ export default function OrdersPage() {
     cartStore.clearCart();
     cartStore.setCustomer(order.customer);
 
-    const posOrderType = (order.type === 'dine_in' || order.type === 'takeaway' || order.type === 'delivery')
-      ? order.type
-      : 'takeaway';
+    const posOrderType = isRetail
+      ? 'offline'
+      : (order.type === 'dine_in' || order.type === 'takeaway' || order.type === 'delivery')
+        ? order.type
+        : 'takeaway';
     cartStore.setOrderType(posOrderType);
 
     if (posOrderType === 'dine_in' && order.table_id) {
@@ -984,10 +988,19 @@ export default function OrdersPage() {
           className="px-3 py-2 border border-border bg-card rounded-lg text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
         >
           <option value="">{tOrders('allTypes')}</option>
-          <option value="dine_in">{tOrders('dineIn')}</option>
-          <option value="takeaway">{tOrders('takeaway')}</option>
-          <option value="delivery">{tOrders('delivery')}</option>
-          <option value="online">{tOrders('online')}</option>
+          {isRetail ? (
+            <>
+              <option value="offline">{tOrders('offline')}</option>
+              <option value="online">{tOrders('online')}</option>
+            </>
+          ) : (
+            <>
+              <option value="dine_in">{tOrders('dineIn')}</option>
+              <option value="takeaway">{tOrders('takeaway')}</option>
+              <option value="delivery">{tOrders('delivery')}</option>
+              <option value="online">{tOrders('online')}</option>
+            </>
+          )}
         </select>
 
         {/* Status filter */}
@@ -1403,7 +1416,7 @@ export default function OrdersPage() {
                         {tOrders('addItem')}
                       </Button>
                     )}
-                    {order.type === 'dine_in' && !['completed', 'cancelled'].includes(order.status) && (
+                    {!isRetail && order.type === 'dine_in' && !['completed', 'cancelled'].includes(order.status) && (
                       <Button
                         variant="outline"
                         onClick={() => handleConvertToTakeaway(order)}

@@ -89,16 +89,16 @@ export default function ProductGrid({
               if (!trimmed) return;
               const match = resolveScannedProduct(trimmed, products);
               if (match) {
-                if (match.scaleBarcode) cart.addItem(match.product, match.quantity);
+                if (match.scaleBarcode || match.variant) cart.addItem(match.product, match.quantity, [], '', match.variant);
                 else onProductClick(match.product);
                 setSearch('');
               }
             }}
             placeholder={t('searchProducts')}
-            className="w-full ps-9 pe-4 py-2 bg-card border border-border rounded-xl focus:border-brand outline-none transition-colors text-sm"
+            className="w-full ps-9 pe-4 py-2 bg-card border border-border rounded-xl focus:border-brand outline-none transition-colors text-base sm:text-sm"
           />
         </div>
-        <div className="flex flex-wrap gap-2 pb-1">
+        <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
           <button
             onClick={() => setSelectedCategory(null)}
             className={`px-4 py-2 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
@@ -132,14 +132,14 @@ export default function ProductGrid({
       </div>
 
       <div className="flex-1 overflow-y-auto pb-20 md:pb-0">
-        <div className={`grid gap-3 ${
-          sidebarOpen 
-            ? 'grid-cols-4' 
-            : 'grid-cols-5'
+        <div className={`grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 ${
+          sidebarOpen ? 'xl:grid-cols-4' : 'xl:grid-cols-5'
         }`}>
           {filtered.map((product) => {
             const inCartQty = cartQuantities.get(product.id) || 0;
-            
+            const sellableVariants = (product.variants || []).filter((variant) => Boolean(variant.is_active) && (!variant.track_inventory || variant.stock_quantity > 0));
+            const isVariantManaged = Boolean(product.variant_mode);
+            const isOutOfStock = isVariantManaged ? sellableVariants.length === 0 : product.stock_quantity <= 0;
 
             return (
               <button
@@ -151,7 +151,7 @@ export default function ProductGrid({
               >
                 {!!product.track_inventory && (
                   <>
-                    {product.stock_quantity <= 0 ? (
+                    {isOutOfStock ? (
                       <span className="absolute top-2 start-2 bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-[10px] font-bold px-2 py-0.5 rounded-full z-10 shadow-sm border border-red-200 dark:border-red-800/40 pointer-events-none">
                         {t('outOfStock')}
                       </span>

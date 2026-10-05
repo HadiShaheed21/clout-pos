@@ -37,7 +37,7 @@ function canonicalize(value: unknown): string {
 }
 
 /** Builds order-insensitive, typed cart identity for merging equivalent items. */
-export function generateCartItemId(productId: number | string, addons: Addon[], specialInstructions: string): string {
+export function generateCartItemId(productId: number | string, addons: Addon[], specialInstructions: string, variantId?: string | null): string {
   const normalizedAddons = addons.map((addon) => ({
     ...addon,
     quantity: addon.quantity || 1,
@@ -50,14 +50,14 @@ export function generateCartItemId(productId: number | string, addons: Addon[], 
     return 0;
   });
 
-  return `cart-v2:${canonicalize({ productId, addons: sortedAddons, specialInstructions })}`;
+  return `cart-v2:${canonicalize({ productId, variantId: variantId || null, addons: sortedAddons, specialInstructions })}`;
 }
 
 /** Normalize persisted/held cart lines to the current identity format. */
 export function normalizeCartItems(items: CartItem[]): CartItem[] {
   const normalized: CartItem[] = [];
   for (const item of items) {
-    const id = generateCartItemId(item.product.id, item.addons || [], item.special_instructions || '');
+    const id = generateCartItemId(item.product.id, item.addons || [], item.special_instructions || '', item.variant?.id);
     const existing = normalized.find((candidate) => candidate.id === id);
     if (existing) {
       existing.quantity += item.quantity;

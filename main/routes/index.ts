@@ -35,6 +35,11 @@ import { whatsappRoutes } from './whatsapp';
 import { supportTicketRoutes } from './support-ticket';
 import { expenseRoutes } from './expenses';
 import { purchaseRoutes } from './purchases';
+import { catalogueRoutes } from './catalogue';
+import { shopRoutes } from './shop';
+import cartRoutes from './shop-cart';
+import checkoutRoutes from './shop-checkout';
+import shopAdminRoutes from './shop-admin';
 import { getDatabase, now, parseItemJson, attachEffectiveAddons, withTxn, getSettingValue, getCachedPairingCode, setCachedPairingCode, verifyPin, recordOrderAudit } from '../db';
 import { checkPinRateLimit } from './orders';
 import { getCurrencyFractionDigits, getCurrencyMinorUnitFactor } from '../countries';
@@ -111,6 +116,18 @@ export function registerRoutes(app: Express): void {
   app.use('/api/support-ticket', supportTicketRoutes);
   app.use('/api/expenses', expenseRoutes);
   app.use('/api/purchases', purchaseRoutes);
+  app.use('/api/catalogue', catalogueRoutes);
+  // Public read-only ecommerce catalogue. Mounted last so it cannot shadow any
+  // existing route; anonymous access is limited to GET /api/shop/*.
+  app.use('/api/shop', shopRoutes);
+  // Guest cart (Phase 3). Mounted BEFORE the catalogue router so /api/shop/cart
+  // is not swallowed by the catalogue's GET-only paths.
+  app.use('/api/shop/cart', cartRoutes);
+  // Online checkout (Phase 4). One POST route; no public order lookup exists.
+  app.use('/api/shop/checkout', checkoutRoutes);
+  // Staff-only online order management (Phase 5). Mounted AFTER the public shop
+  // routes and never covered by their anonymous bypass predicates.
+  app.use('/api/shop/admin', shopAdminRoutes);
 
   // Tax preview
   app.post('/api/tax/preview', asyncHandler(async (req, res) => {
@@ -407,10 +424,12 @@ export function registerRoutes(app: Express): void {
 
           const product = db.prepare('SELECT * FROM products WHERE id = ?').get(currentItem.product_id) as any;
           if (product && currentItem.inventory_deducted_quantity > 0) {
-            db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
-              .run(currentItem.inventory_deducted_quantity, now(), product.id);
-            recordStockMovement(db, { productId: product.id, quantityDelta: currentItem.inventory_deducted_quantity,
-              previousQuantity: product.stock_quantity, movementType: 'sale_cancelled', referenceType: 'order', referenceId: orderId,
+            const variant = currentItem.variant_id ? db.prepare('SELECT * FROM product_variants WHERE id = ?').get(currentItem.variant_id) as any : null;
+            const inventoryOwner = variant || product;
+            if (variant) db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?').run(currentItem.inventory_deducted_quantity, now(), variant.id);
+            else db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?').run(currentItem.inventory_deducted_quantity, now(), product.id);
+            recordStockMovement(db, { productId: product.id, variantId: variant?.id || null, quantityDelta: currentItem.inventory_deducted_quantity,
+              previousQuantity: inventoryOwner.stock_quantity, movementType: 'sale_cancelled', referenceType: 'order', referenceId: orderId,
               actorUserId: actorId, createdAt: now() });
           }
         }
@@ -598,13 +617,15 @@ export function registerRoutes(app: Express): void {
         // Re-deduct the inventory quantity originally consumed by the item
         const product = db.prepare('SELECT * FROM products WHERE id = ?').get(currentItem.product_id) as any;
         if (product && currentItem.inventory_deducted_quantity > 0) {
-          if (product.stock_quantity < currentItem.inventory_deducted_quantity) {
+          const variant = currentItem.variant_id ? db.prepare('SELECT * FROM product_variants WHERE id = ?').get(currentItem.variant_id) as any : null;
+          const inventoryOwner = variant || product;
+          if (inventoryOwner.stock_quantity < currentItem.inventory_deducted_quantity) {
             throw Object.assign(new Error(`Insufficient stock to restore item (Available: ${product.stock_quantity}, Required: ${currentItem.inventory_deducted_quantity})`), { statusCode: 400 });
           }
-          db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
-            .run(currentItem.inventory_deducted_quantity, now(), product.id);
-          recordStockMovement(db, { productId: product.id, quantityDelta: -currentItem.inventory_deducted_quantity,
-            previousQuantity: product.stock_quantity, movementType: 'sale', referenceType: 'order', referenceId: orderId,
+          if (variant) db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?').run(currentItem.inventory_deducted_quantity, now(), variant.id);
+          else db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?').run(currentItem.inventory_deducted_quantity, now(), product.id);
+          recordStockMovement(db, { productId: product.id, variantId: variant?.id || null, quantityDelta: -currentItem.inventory_deducted_quantity,
+            previousQuantity: inventoryOwner.stock_quantity, movementType: 'sale', referenceType: 'order', referenceId: orderId,
             actorUserId: actorId, createdAt: now() });
         }
 

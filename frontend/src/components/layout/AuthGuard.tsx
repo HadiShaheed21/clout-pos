@@ -22,7 +22,11 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const isPublicPath = PUBLIC_PATHS.some(p => pathname === p || pathname?.startsWith(p + '/'));
   const isStandalonePath = pathname?.startsWith('/kds') || pathname?.startsWith('/server-standalone');
   const isPreviewPath = pathname === '/retail-preview';
-  const bypassPosAuthentication = isStandalonePath || isPreviewPath;
+  // The CLOUT storefront prototype is a public, customer-facing surface with its
+  // own mock data and no POS session. Scoped to `/shop` and its subroutes only, so
+  // no POS page or API path is affected.
+  const isShopPath = pathname === '/shop' || pathname?.startsWith('/shop/');
+  const bypassPosAuthentication = isStandalonePath || isPreviewPath || isShopPath;
 
   useEffect(() => {
     // Standalone KDS and Server App pages manage their own auth sessions;

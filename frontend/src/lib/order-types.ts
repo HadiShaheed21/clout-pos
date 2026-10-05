@@ -11,5 +11,6 @@ export const ORDER_TYPE_LABEL_KEYS = {
   dine_in: 'dineIn',
   takeaway: 'takeaway',
   delivery: 'delivery',
+  offline: 'offline',
   online: 'online',
 } as const satisfies Record<OrderType, OrdersKey>;

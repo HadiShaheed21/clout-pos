@@ -4,6 +4,7 @@ export type StockMovementType = 'opening' | 'purchase' | 'sale' | 'sale_cancelle
 
 type StockMovement = {
   productId: string;
+  variantId?: string | null;
   quantityDelta: number;
   previousQuantity: number;
   movementType: StockMovementType;
@@ -18,11 +19,12 @@ type StockMovement = {
 export function recordStockMovement(db: Database.Database, movement: StockMovement): void {
   db.prepare(`
     INSERT INTO stock_movements (
-      product_id, movement_type, quantity_delta, quantity_before, quantity_after,
+      product_id, variant_id, movement_type, quantity_delta, quantity_before, quantity_after,
       reference_type, reference_id, reason, actor_user_id, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     movement.productId,
+    movement.variantId ?? null,
     movement.movementType,
     movement.quantityDelta,
     movement.previousQuantity,

@@ -131,12 +131,22 @@ function createApp(routeModules: Record<string, any>, options?: { authRole?: str
   }
 
   const { getJWTSecret } = require('../../main/routes/auth');
+  // Mirrors the production bypass in main/server.ts so public read routes behave
+  // identically in tests. Narrowly scoped to GET /api/shop/* by the predicate.
+  const { isPublicShopPath } = require('../../main/routes/shop');
+  // Guest cart writes (Phase 3): separate predicate, mirrors main/server.ts.
+  const { isPublicShopCartPath } = require('../../main/routes/shop-cart');
+  // Online checkout (Phase 4): single POST path, mirrors main/server.ts.
+  const { isPublicShopCheckoutPath } = require('../../main/routes/shop-checkout');
 
   // Auth middleware — matches production behavior
   app.use((req: any, res: any, next: any) => {
     if (!req.path.startsWith('/api')) { next(); return; }
     if (req.path === '/api/health') { next(); return; }
     if (req.path.startsWith('/api/auth') && !req.path.includes('/api/auth/me')) { next(); return; }
+    if (isPublicShopPath(req.path, req.method)) { next(); return; }
+    if (isPublicShopCartPath(req.path, req.method)) { next(); return; }
+    if (isPublicShopCheckoutPath(req.path, req.method)) { next(); return; }
 
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
@@ -211,6 +221,28 @@ function seedManagerUser(db: any): { userId: string; token: string; authHeader: 
     { expiresIn: '1h' }
   );
 
+  return { userId, token, authHeader: { Authorization: `Bearer ${token}` } };
+}
+
+/**
+ * Seeds a staff user in an arbitrary role.
+ *
+ * Phase 5 needs cashier and server accounts specifically: cashier may verify
+ * payments, server may only see packing information. Hand-rolled per role would
+ * duplicate the JWT + bcrypt wiring above, so this generalises it.
+ */
+function seedStaffRole(db: any, role: string): { userId: string; token: string; authHeader: Record<string, string> } {
+  const { getJWTSecret } = require('../../main/routes/auth');
+  const userId = `role-test-${role}`;
+  const email = `${role}@test.local`;
+  const passwordHash = bcrypt.hashSync('testpass123', 10);
+
+  db.prepare(
+    `INSERT OR IGNORE INTO users (id, name, email, password, role, is_active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 1, ?, ?)`
+  ).run(userId, `Test ${role}`, email, passwordHash, role, now(), now());
+
+  const token = jwt.sign({ userId, email, role }, getJWTSecret(), { expiresIn: '1h' });
   return { userId, token, authHeader: { Authorization: `Bearer ${token}` } };
 }
 
@@ -426,6 +458,7 @@ module.exports = {
 
   // Seed data
   seedOwnerUser,
+  seedStaffRole,
   seedManagerUser,
   seedCategory,
   seedProduct,

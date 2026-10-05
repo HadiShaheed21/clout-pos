@@ -17,6 +17,7 @@ import { requireRole } from '../middleware/security';
 import { ROLE_ACCESS, hasRole } from '../../shared/role-permissions';
 import { getCurrencyFractionDigits, getCurrencyMinorUnitFactor } from '../countries';
 import { recordStockMovement } from '../services/stock-movements';
+import { selectedVariant } from '../services/catalogue';
 import { getTenantCurrency } from './bills';
 import expressRateLimit from 'express-rate-limit';
 
@@ -25,6 +26,15 @@ const orderReadRateLimit = expressRateLimit({ windowMs: 60 * 1000, limit: 120, s
 const orderWriteRateLimit = expressRateLimit({ windowMs: 60 * 1000, limit: 60, standardHeaders: true, legacyHeaders: false });
 const MAX_ORDER_IDEMPOTENCY_KEY_LENGTH = 128;
 const OWNER_MANAGER_ROLE_PLACEHOLDERS = ROLE_ACCESS.ownerManager.map(() => '?').join(', ');
+const RESTAURANT_ORDER_TYPES = ['dine_in', 'takeaway', 'delivery', 'online'] as const;
+const RETAIL_ORDER_TYPES = ['offline', 'online'] as const;
+
+function orderTypeAllowedForBusiness(type: unknown, businessType: string): boolean {
+  if (typeof type !== 'string') return false;
+  return businessType === 'fashion_retail'
+    ? (RETAIL_ORDER_TYPES as readonly string[]).includes(type)
+    : (RESTAURANT_ORDER_TYPES as readonly string[]).includes(type);
+}
 
 function orderIdempotencyKey(req: Request): string | null {
   const raw = req.get('Idempotency-Key');
@@ -386,8 +396,17 @@ router.post('/', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: R
       return res.status(400).json({ error: 'At least one item is required' });
     }
 
-    if (!type || !['dine_in', 'takeaway', 'delivery', 'online'].includes(type)) {
-      return res.status(400).json({ error: 'Valid type is required (dine_in, takeaway, delivery, online)' });
+    const db = getDatabase();
+    const businessType = getSettingValue('business_type') || 'restaurant';
+    if (!orderTypeAllowedForBusiness(type, businessType)) {
+      const supportedTypes = businessType === 'fashion_retail' ? RETAIL_ORDER_TYPES : RESTAURANT_ORDER_TYPES;
+      return res.status(400).json({ error: `Valid type is required (${supportedTypes.join(', ')})` });
+    }
+    if (businessType === 'fashion_retail' && (table_id || guest_count !== undefined || packaging_charge !== undefined || delivery_charge !== undefined || service_charge !== undefined)) {
+      return res.status(400).json({ error: 'Restaurant order fields are not supported for fashion retail orders' });
+    }
+    if (type !== 'online' && (online_platform !== undefined || external_order_id !== undefined)) {
+      return res.status(400).json({ error: 'Online order references are only supported for online orders' });
     }
     if (guest_count !== undefined && guest_count !== null && (!Number.isSafeInteger(guest_count) || guest_count < 1 || guest_count > 99)) {
       return res.status(400).json({ error: 'guest_count must be a whole number between 1 and 99' });
@@ -416,8 +435,6 @@ router.post('/', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: R
     }
     const onlinePlatform = typeof online_platform === 'string' ? online_platform.trim().slice(0, 100) : null;
     const externalOrderId = typeof external_order_id === 'string' ? external_order_id.trim().slice(0, 100) : null;
-
-    const db = getDatabase();
 
     try {
       validateOrderNotes(db, special_instructions);
@@ -498,10 +515,10 @@ router.post('/', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: R
       const customer = customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(customer_id) as any : null;
 
       const insertItem = db.prepare(`
-        INSERT INTO order_items (order_id, product_id, product_name, product_sku, unit_price, quantity, inventory_deducted_quantity,
+        INSERT INTO order_items (order_id, product_id, variant_id, product_name, product_sku, unit_price, quantity, inventory_deducted_quantity,
           subtotal, tax_amount, tax_breakdown, tax_snapshot, tax_type, discount_amount, total, variant_selection,
           modifier_selection, special_instructions, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
       `);
 
       for (const item of items) {
@@ -510,17 +527,19 @@ router.post('/', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: R
           throw new Error(`Product ${item.product_id} not found`);
         }
 
-        if (product.track_inventory && product.stock_quantity < item.quantity) {
+        const variant = selectedVariant(db, product, item.variant_id);
+        const inventoryOwner = variant || product;
+        if (inventoryOwner.track_inventory && inventoryOwner.stock_quantity < item.quantity) {
           throw new Error(`Insufficient stock for ${product.name}`);
         }
 
-        const unitPrice = parseFloat(product.price);
+        const unitPrice = variant?.price_override ?? parseFloat(product.price);
         const quantity = item.quantity;
         // Item discounts are applied via dedicated discount routes, not creation.
         const itemDiscount = 0;
 
         // Validate quantity and price
-        validateProductQuantity(product, quantity);
+        validateProductQuantity(variant ? { ...product, sale_unit: 'each', allow_fractional_quantity: 0 } : product, quantity);
         if (unitPrice < 0 || !Number.isFinite(unitPrice)) {
           throw new Error(`Invalid price for ${product.name}: must be a non-negative number`);
         }
@@ -557,19 +576,24 @@ router.post('/', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: R
 
         const itemCreatedAt = now();
         const insertItemResult = insertItem.run(
-          orderId, product.id, product.name, product.sku, unitPrice, quantity, product.track_inventory ? quantity : 0,
+          orderId, product.id, variant?.id || null, product.name, variant?.sku || product.sku, unitPrice, quantity, inventoryOwner.track_inventory ? quantity : 0,
           itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown), itemTaxSnapshotJson,
           taxResult.tax_type, itemDiscount, itemTotal,
-          JSON.stringify(item.variant_selection || null),
+          JSON.stringify(variant ? {
+            variant_id: variant.id,
+            display_name: variant.display_name,
+            sku: variant.sku,
+            options: variant.options,
+          } : (item.variant_selection || null)),
           JSON.stringify(item.modifier_selection || null),
           item.special_instructions || null, itemCreatedAt, itemCreatedAt
         );
         insertOrderItemAddons(db, insertItemResult.lastInsertRowid, item.addons, itemCreatedAt);
 
-        if (product.track_inventory) {
-          db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
-            .run(quantity, now(), product.id);
-          recordStockMovement(db, { productId: product.id, quantityDelta: -quantity, previousQuantity: product.stock_quantity,
+        if (inventoryOwner.track_inventory) {
+          if (variant) db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?').run(quantity, now(), variant.id);
+          else db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?').run(quantity, now(), product.id);
+          recordStockMovement(db, { productId: product.id, variantId: variant?.id || null, quantityDelta: -quantity, previousQuantity: inventoryOwner.stock_quantity,
             movementType: 'sale', referenceType: 'order', referenceId: String(orderId), actorUserId: authenticatedUserId, createdAt: itemCreatedAt });
         }
       }
@@ -710,10 +734,10 @@ router.post('/:id/items', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales)
       const customer = currentOrder.customer_id ? db.prepare('SELECT * FROM customers WHERE id = ?').get(currentOrder.customer_id) as any : null;
 
       const insertItem = db.prepare(`
-        INSERT INTO order_items (order_id, product_id, product_name, product_sku, unit_price, quantity, inventory_deducted_quantity,
+        INSERT INTO order_items (order_id, product_id, variant_id, product_name, product_sku, unit_price, quantity, inventory_deducted_quantity,
           subtotal, tax_amount, tax_breakdown, tax_snapshot, tax_type, discount_amount, total, variant_selection,
           modifier_selection, special_instructions, status, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
       `);
 
       const insertedItemIds: (number | bigint)[] = [];
@@ -722,17 +746,19 @@ router.post('/:id/items', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales)
         if (!product) {
           throw new Error(`Product ${item.product_id} not found`);
         }
-        if (product.track_inventory && product.stock_quantity < item.quantity) {
+        const variant = selectedVariant(db, product, item.variant_id);
+        const inventoryOwner = variant || product;
+        if (inventoryOwner.track_inventory && inventoryOwner.stock_quantity < item.quantity) {
           throw new Error(`Insufficient stock for ${product.name}`);
         }
 
-        const unitPrice = parseFloat(product.price);
+        const unitPrice = variant?.price_override ?? parseFloat(product.price);
         const quantity = item.quantity;
         // Item discounts are applied via dedicated discount routes, not creation.
         const itemDiscount = 0;
 
         // Validate quantity and price
-        validateProductQuantity(product, quantity);
+        validateProductQuantity(variant ? { ...product, sale_unit: 'each', allow_fractional_quantity: 0 } : product, quantity);
         if (unitPrice < 0 || !Number.isFinite(unitPrice)) {
           throw new Error(`Invalid price for ${product.name}: must be a non-negative number`);
         }
@@ -758,20 +784,20 @@ router.post('/:id/items', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales)
 
         const itemCreatedAt = now();
         const insertItemResult = insertItem.run(
-          req.params.id, product.id, product.name, product.sku, unitPrice, quantity, product.track_inventory ? quantity : 0,
+          req.params.id, product.id, variant?.id || null, product.name, variant?.sku || product.sku, unitPrice, quantity, inventoryOwner.track_inventory ? quantity : 0,
           itemSubtotal, taxResult.tax_amount, JSON.stringify(taxResult.tax_breakdown), itemTaxSnapshotJson,
           taxResult.tax_type, itemDiscount, itemTotal,
-          JSON.stringify(item.variant_selection || null),
+          JSON.stringify(variant ? { variant_id: variant.id, display_name: variant.display_name, sku: variant.sku } : (item.variant_selection || null)),
           JSON.stringify(item.modifier_selection || null),
           item.special_instructions || null, itemCreatedAt, itemCreatedAt
         );
         insertOrderItemAddons(db, insertItemResult.lastInsertRowid, item.addons, itemCreatedAt);
         insertedItemIds.push(insertItemResult.lastInsertRowid);
 
-        if (product.track_inventory) {
-          db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?')
-            .run(quantity, now(), product.id);
-          recordStockMovement(db, { productId: product.id, quantityDelta: -quantity, previousQuantity: product.stock_quantity,
+        if (inventoryOwner.track_inventory) {
+          if (variant) db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?').run(quantity, now(), variant.id);
+          else db.prepare('UPDATE products SET stock_quantity = stock_quantity - ?, updated_at = ? WHERE id = ?').run(quantity, now(), product.id);
+          recordStockMovement(db, { productId: product.id, variantId: variant?.id || null, quantityDelta: -quantity, previousQuantity: inventoryOwner.stock_quantity,
             movementType: 'sale', referenceType: 'order', referenceId: String(req.params.id), actorUserId: String((req as any).user.userId), createdAt: now() });
         }
       }
@@ -1014,10 +1040,12 @@ router.patch('/:id/status', orderWriteRateLimit, requireRole(...ROLE_ACCESS.orde
           for (const item of eligibleItems) {
             const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.product_id) as any;
             if (product && item.inventory_deducted_quantity > 0) {
-              db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?')
-                .run(item.inventory_deducted_quantity, nowStr, product.id);
-              recordStockMovement(db, { productId: product.id, quantityDelta: item.inventory_deducted_quantity,
-                previousQuantity: product.stock_quantity, movementType: 'sale_cancelled', referenceType: 'order',
+              const variant = item.variant_id ? db.prepare('SELECT * FROM product_variants WHERE id = ?').get(item.variant_id) as any : null;
+              const inventoryOwner = variant || product;
+              if (variant) db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?').run(item.inventory_deducted_quantity, nowStr, variant.id);
+              else db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, updated_at = ? WHERE id = ?').run(item.inventory_deducted_quantity, nowStr, product.id);
+              recordStockMovement(db, { productId: product.id, variantId: variant?.id || null, quantityDelta: item.inventory_deducted_quantity,
+                previousQuantity: inventoryOwner.stock_quantity, movementType: 'sale_cancelled', referenceType: 'order',
                 referenceId: String(req.params.id), actorUserId: String((req as any).user.userId), createdAt: nowStr });
             }
           }
@@ -1111,6 +1139,9 @@ router.patch('/:id/customer', orderWriteRateLimit, requireRole(...ROLE_ACCESS.ow
 router.patch('/:id/convert-to-takeaway', orderWriteRateLimit, requireRole(...ROLE_ACCESS.sales), (req: Request, res: Response) => {
   try {
     const db = getDatabase();
+    if ((getSettingValue('business_type') || 'restaurant') === 'fashion_retail') {
+      return res.status(400).json({ error: 'Takeaway conversion is not supported for fashion retail orders' });
+    }
     const nowStr = now();
 
     withTxn(() => {

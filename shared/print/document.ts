@@ -443,6 +443,7 @@ const PAYMENT_METHOD_CONCEPTS: Readonly<Record<string, LabelConceptId>> = Object
 const KOT_ORDER_TYPE_CONCEPTS: Readonly<Record<string, LabelConceptId>> = Object.freeze({
   dine_in: 'pos.orderTypeDineIn',
   delivery: 'pos.orderTypeDelivery',
+  offline: 'pos.orderTypeOffline',
   online: 'pos.orderTypeOnline',
   takeaway: 'pos.orderTypeTakeaway',
 });

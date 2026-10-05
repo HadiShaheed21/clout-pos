@@ -159,12 +159,12 @@ export function createRefund(db: Database, req: RefundRequest): RefundResult {
     // Insert negative void_adjustment row to reverse item cost while preserving audit trail.
     const adjustmentResult = db.prepare(`
       INSERT INTO order_items (
-        order_id, product_id, product_name, product_sku, unit_price, quantity,
+        order_id, product_id, variant_id, product_name, product_sku, unit_price, quantity,
         subtotal, tax_amount, tax_breakdown, tax_snapshot, tax_type, discount_amount, total,
         variant_selection, modifier_selection, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'void_adjustment', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'void_adjustment', ?, ?)
     `).run(
-      item.order_id, item.product_id, `Refund: ${item.product_name}`, item.product_sku,
+      item.order_id, item.product_id, item.variant_id ?? null, `Refund: ${item.product_name}`, item.product_sku,
       -item.unit_price, item.quantity, -item.subtotal, -(item.tax_amount || 0),
       invertTaxBreakdown(item.tax_breakdown), invertTaxSnapshot(item.tax_snapshot), item.tax_type,
       -(item.discount_amount || 0), -item.total,

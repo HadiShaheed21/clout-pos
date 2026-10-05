@@ -9,6 +9,9 @@ import * as fs from 'fs';
 import jwt from 'jsonwebtoken';
 import { registerRoutes } from './routes';
 import { getJWTSecret } from './routes/auth';
+import { isPublicShopPath } from './routes/shop';
+import { isPublicShopCartPath } from './routes/shop-cart';
+import { isPublicShopCheckoutPath } from './routes/shop-checkout';
 import { databaseMaintenanceMiddleware, getDbHealth, isDatabaseMaintenanceActive, isKdsEnabled } from './db';
 import { setupKdsWebSocket } from './services/kds';
 import expressRateLimit from 'express-rate-limit';
@@ -38,6 +41,15 @@ function requireAuth(req: Request, res: Response, next: NextFunction): void {
   if (req.path.startsWith('/api/auth')) { next(); return; }
   // Allow unauthenticated GET requests for product images (so <img> tags work)
   if (req.path.startsWith('/api/products/') && req.path.endsWith('/image') && req.method === 'GET') { next(); return; }
+  // Public ecommerce catalogue (GET only, /api/shop/* only). The predicate is
+  // defined beside the routes it describes; every other API path below still
+  // requires a bearer token. POST/PUT/PATCH/DELETE never bypass.
+  if (isPublicShopPath(req.path, req.method)) { next(); return; }
+  // Guest cart writes (Phase 3). A separate predicate from the catalogue bypass
+  // so the GET-only read surface stays intact; scoped to /api/shop/cart exactly.
+  if (isPublicShopCartPath(req.path, req.method)) { next(); return; }
+  // Online checkout (Phase 4): a single POST path, nothing else.
+  if (isPublicShopCheckoutPath(req.path, req.method)) { next(); return; }
 
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {

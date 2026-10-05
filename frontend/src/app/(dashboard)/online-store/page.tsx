@@ -3,21 +3,14 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import {
-  ExternalLink, Globe2, ImageIcon, PackageCheck,
-  RefreshCw, ShoppingBag, Tags, Upload, Wifi,
+  ArrowRight, ExternalLink, Globe2, ImageIcon, PackageCheck,
+  ShoppingBag, Tags, Upload, Wifi,
 } from 'lucide-react';
 import api from '@/lib/api';
 import type { Product } from '@/lib/types';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
 import { nameToColor } from '@/lib/image-utils';
 
-type WebsiteOrder = { id: string; customer: string; items: string; total: number; state: 'New order' | 'Paid' | 'Packing' | 'Dispatched' };
-
-const previewOrders: WebsiteOrder[] = [
-  { id: 'WEB-1042', customer: 'Aisha K.', items: 'Classic Cotton Polo · Navy / M', total: 1499, state: 'New order' },
-  { id: 'WEB-1041', customer: 'Rahul P.', items: 'Straight Fit Denim · Indigo / 30', total: 2899, state: 'Paid' },
-  { id: 'WEB-1040', customer: 'Maya S.', items: 'Printed Midi Dress · Rose / M', total: 3499, state: 'Packing' },
-];
 
 export default function OnlineStorePage() {
   const [products, setProducts] = useState<Product[]>([]);
@@ -53,7 +46,8 @@ export default function OnlineStorePage() {
           <h1 className="mt-1 text-3xl font-bold tracking-tight">Website control centre</h1>
           <p className="mt-2 max-w-2xl text-sm text-muted-foreground">Manage what customers see online, prepare website orders, and keep your store catalog ready for publishing.</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <Link href="/collections" className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted"><Tags size={16} /> Collections</Link>
           <Link href="/products" className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-card px-4 text-sm font-semibold hover:bg-muted"><Upload size={16} /> Manage catalog</Link>
           <button type="button" className="inline-flex h-10 items-center gap-2 rounded-lg bg-[#10284b] px-4 text-sm font-semibold text-white hover:bg-[#193b69]"><ExternalLink size={16} /> Connect domain</button>
         </div>
@@ -90,11 +84,20 @@ export default function OnlineStorePage() {
       </section>
 
       <section className="rounded-2xl border border-border bg-card shadow-sm">
-        <div className="flex items-center justify-between border-b border-border px-5 py-4"><div><h2 className="font-bold">Website order monitor</h2><p className="mt-0.5 text-sm text-muted-foreground">This replaces the kitchen display for clothing orders: verify payment, pack, and dispatch.</p></div><button type="button" className="inline-flex items-center gap-2 text-sm font-semibold text-[#244b7c]"><RefreshCw size={15} /> Refresh</button></div>
-        <div className="grid gap-0 divide-y divide-border md:grid-cols-3 md:divide-x md:divide-y-0">
-          {(['New order', 'Paid', 'Packing'] as const).map((state) => <div key={state} className="min-h-44 p-4"><div className="mb-3 flex items-center justify-between"><h3 className="font-semibold">{state}</h3><span className="rounded-full bg-muted px-2 py-0.5 text-xs font-semibold">{previewOrders.filter((order) => order.state === state).length}</span></div>{previewOrders.filter((order) => order.state === state).map((order) => <div key={order.id} className="mb-2 rounded-lg border border-border bg-background p-3"><div className="flex justify-between gap-2"><span className="text-xs font-bold text-[#244b7c]">{order.id}</span><span className="text-xs font-bold">{fmt(order.total)}</span></div><p className="mt-1 text-sm font-semibold">{order.customer}</p><p className="mt-1 text-xs text-muted-foreground">{order.items}</p></div>)}{!previewOrders.some((order) => order.state === state) && <p className="py-8 text-center text-sm text-muted-foreground">No orders</p>}</div>)}
+      <section className="rounded-2xl border border-border bg-card shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+          <div>
+            <h2 className="font-bold">Website order monitor</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">Verify payment, pack, and dispatch real customer orders from the online order desk.</p>
+          </div>
+          <Link
+            href="/online-orders"
+            className="inline-flex items-center gap-2 rounded-lg bg-[#244b7c] px-4 py-2 text-sm font-semibold text-white"
+          >
+            <ArrowRight size={15} /> Open online orders
+          </Link>
         </div>
-        <div className="border-t border-border bg-muted/40 px-5 py-3 text-xs text-muted-foreground"><Tags className="mr-1 inline size-3.5" /> Preview order cards are shown until the hosted storefront is connected. Offer price, coupons, Razorpay confirmation, shipping labels, and central stock sync are delivered with that service—not by the old KDS.</div>
+      </section>
       </section>
     </div>
   );

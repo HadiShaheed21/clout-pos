@@ -51,11 +51,43 @@ function seedLinkedData(): void {
       (order_id, product_id, product_name, unit_price, quantity, subtotal, total, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, 1, ?, ?, 'pending', datetime('now'), datetime('now'))
   `).run(order.id, 'restore-product', 'Restore Product', 12.5, 12.5, 12.5);
+  db.prepare(`INSERT INTO product_option_groups
+    (id, product_id, name, normalized_name, sort_order) VALUES (?, ?, ?, ?, ?)`)
+    .run('restore-size-group', 'restore-product', 'Size', 'size', 0);
+  db.prepare(`INSERT INTO product_option_values
+    (id, option_group_id, label, normalized_label, sort_order) VALUES (?, ?, ?, ?, ?)`)
+    .run('restore-size-medium', 'restore-size-group', 'M', 'm', 0);
+  db.prepare(`INSERT INTO product_variants
+    (id, product_id, option_signature, display_name, sku, stock_quantity) VALUES (?, ?, ?, ?, ?, ?)`)
+    .run('restore-medium-variant', 'restore-product', 'size=m', 'M', 'RESTORE-M', 2);
+  db.prepare(`INSERT INTO product_variant_option_values
+    (variant_id, option_group_id, option_value_id) VALUES (?, ?, ?)`)
+    .run('restore-medium-variant', 'restore-size-group', 'restore-size-medium');
+  db.prepare(`INSERT INTO product_images
+    (id, product_id, data_uri, mime_type, byte_size, sort_order, is_primary) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run('restore-product-image', 'restore-product', 'data:image/png;base64,AA==', 'image/png', 1, 0, 1);
+  db.prepare(`INSERT INTO collections (id, name, slug, sort_order) VALUES (?, ?, ?, ?)`)
+    .run('restore-collection', 'Restore Collection', 'restore-collection', 0);
+  db.prepare(`INSERT INTO collection_products (collection_id, product_id, sort_order) VALUES (?, ?, ?)`)
+    .run('restore-collection', 'restore-product', 0);
 }
 
 function clearLinkedData(): void {
   const db = getDatabase();
-  db.exec('DELETE FROM order_items; DELETE FROM bills; DELETE FROM orders; DELETE FROM products; DELETE FROM categories;');
+  db.exec(`
+    DELETE FROM order_items;
+    DELETE FROM bills;
+    DELETE FROM orders;
+    DELETE FROM collection_products;
+    DELETE FROM collections;
+    DELETE FROM product_images;
+    DELETE FROM product_variant_option_values;
+    DELETE FROM product_variants;
+    DELETE FROM product_option_values;
+    DELETE FROM product_option_groups;
+    DELETE FROM products;
+    DELETE FROM categories;
+  `);
 }
 
 function copyAndStamp(sourcePath: string, destinationPath: string, schemaVersion: number): void {
@@ -201,6 +233,9 @@ async function run() {
       'Restore Product',
       'child data is restored after parent data',
     );
+    assert.equal((getDatabase().prepare('SELECT COUNT(*) AS count FROM product_variants WHERE id = ?').get('restore-medium-variant') as { count: number }).count, 1, 'variant data is restored');
+    assert.equal((getDatabase().prepare('SELECT COUNT(*) AS count FROM product_images WHERE id = ?').get('restore-product-image') as { count: number }).count, 1, 'gallery data is restored');
+    assert.equal((getDatabase().prepare('SELECT COUNT(*) AS count FROM collection_products WHERE collection_id = ? AND product_id = ?').get('restore-collection', 'restore-product') as { count: number }).count, 1, 'collection membership is restored');
     assert.equal(getDatabase().pragma('foreign_keys', { simple: true }), 1, 'foreign keys are re-enabled after restore');
     assert.equal(
       (getDatabase().prepare('SELECT value FROM settings WHERE key = ?').get('kds_enabled') as { value: string }).value,

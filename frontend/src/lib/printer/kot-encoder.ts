@@ -200,6 +200,7 @@ function resolveOrderType(type: string, language: string): string {
   const keys: Record<string, string> = {
     dine_in: 'pos.orderTypeDineIn',
     delivery: 'pos.orderTypeDelivery',
+    offline: 'pos.orderTypeOffline',
     online: 'pos.orderTypeOnline',
     takeaway: 'pos.orderTypeTakeaway',
   };

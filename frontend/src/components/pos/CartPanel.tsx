@@ -5,6 +5,7 @@ import {
   Plus, Minus, Trash2, Pause, MapPin, SquarePen,
   Users,
 } from 'lucide-react';
+import { useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { useCartStore } from '@/store/cart';
 import { useHeldOrdersStore } from '@/store/held-orders';
@@ -30,6 +31,7 @@ const orderTypeIcons = {
   dine_in: UtensilsCrossed,
   takeaway: Package,
   delivery: Truck,
+  offline: ShoppingCart,
   online: Globe,
 };
 
@@ -45,7 +47,13 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
   const canHold = isRestaurant && cart.orderType === 'dine_in' && cart.tableId && cart.items.length > 0 && billingType === 'postpaid';
   const availableOrderTypes = isRestaurant
     ? (['dine_in', 'takeaway', 'delivery', 'online'] as const)
-    : (['takeaway', 'delivery', 'online'] as const);
+    : (['offline'] as const);
+
+  // A cart can survive switching stores in the same browser. Retail sales must
+  // never inherit a restaurant workflow from that prior session.
+  useEffect(() => {
+    if (!isRestaurant && cart.orderType !== 'offline') cart.setOrderType('offline');
+  }, [cart.orderType, cart.setOrderType, isRestaurant]);
 
   const handleHold = async () => {
     if (!cart.tableId) {
@@ -80,9 +88,15 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
           {availableOrderTypes.map((type) => {
               const Icon = orderTypeIcons[type];
               const showIcon = type !== 'dine_in' && type !== 'online';
-              const label = !isRestaurant
-                ? (type === 'takeaway' ? 'In-store sale' : type === 'delivery' ? 'Ship to customer' : 'Website order')
-                : (type === 'dine_in' ? t('orderTypeDineIn') : type === 'takeaway' ? t('orderTypeTakeaway') : type === 'delivery' ? t('orderTypeDelivery') : t('orderTypeOnline'));
+              const label = type === 'dine_in'
+                ? t('orderTypeDineIn')
+                : type === 'takeaway'
+                  ? t('orderTypeTakeaway')
+                  : type === 'delivery'
+                    ? t('orderTypeDelivery')
+                    : type === 'offline'
+                      ? t('orderTypeOffline')
+                      : t('orderTypeOnline');
               return (
                 <button
                   key={type}
@@ -100,7 +114,7 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
             })}
         </div>
 
-        {cart.orderType === 'dine_in' && (
+        {isRestaurant && cart.orderType === 'dine_in' && (
           <div className="flex items-center justify-between rounded-lg border border-border bg-card px-3 py-2">
             <div className="flex items-center gap-2 text-sm text-muted-foreground"><Users size={15} /><span>{t('pax')}</span></div>
             <div className="flex items-center gap-2">
@@ -112,7 +126,7 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
         )}
 
         {/* Delivery address — shown inline when delivery is selected */}
-        {cart.orderType === 'delivery' && (
+        {isRestaurant && cart.orderType === 'delivery' && (
           <div className="flex items-center gap-2">
             <MapPin size={14} className="text-muted-foreground shrink-0" />
             <input
@@ -126,7 +140,7 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
         )}
 
         {/* Online platform + external order id — shown inline when online is selected */}
-        {cart.orderType === 'online' && (
+        {isRestaurant && cart.orderType === 'online' && (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
               <Globe size={14} className="text-muted-foreground shrink-0" />
@@ -178,6 +192,7 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
                 <div className="flex items-start gap-2">
                   <p className="min-w-0 flex-1 break-words text-sm font-medium leading-snug text-foreground">
                     {item.product.name}
+                    {item.variant && <span className="ms-1 text-xs font-normal text-muted-foreground">— {item.variant.display_name}</span>}
                   </p>
                   <button
                     onClick={() => cart.removeItem(item.id)}
@@ -203,7 +218,7 @@ export default function CartPanel({ tables, submitting, onPlaceOrder, onEditItem
                 </div>
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
                   <p className="text-sm text-muted-foreground">
-                    {fmt(Number(item.product.price))}
+                    {fmt(Number(item.variant?.price_override ?? item.product.price))}
                   </p>
                   <div className="flex items-center gap-1.5">
                     {onEditItem && (

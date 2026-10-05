@@ -6,16 +6,17 @@ import toast from 'react-hot-toast';
 import { Button } from '@/components/ui/button';
 import { useTranslations } from 'use-intl';
 import { useFormatCurrency } from '@/hooks/useFormatCurrency';
-import type { Product, Addon, AddonGroup } from '@/lib/types';
+import type { Product, Addon, AddonGroup, ProductVariant } from '@/lib/types';
 
 interface Props {
   product: Product;
   currency: string;
-  onAdd: (product: Product, quantity: number, addons: Addon[], specialInstructions: string) => void;
+  onAdd: (product: Product, quantity: number, addons: Addon[], specialInstructions: string, variant?: ProductVariant | null) => void;
   onClose: () => void;
   initialQuantity?: number;
   initialAddons?: Addon[];
   initialInstructions?: string;
+  initialVariantId?: string | null;
   mode?: 'add' | 'edit';
 }
 
@@ -31,13 +32,14 @@ function groupInitialAddons(addons: Addon[]): Record<string | number, Addon[]> {
 
 export default function AddonModal({
   product, onAdd, onClose,
-  initialQuantity = 1, initialAddons = [], initialInstructions = '', mode = 'add',
+  initialQuantity = 1, initialAddons = [], initialInstructions = '', initialVariantId = null, mode = 'add',
 }: Props) {
   const t = useTranslations('pos');
   const fmt = useFormatCurrency();
   const [selected, setSelected] = useState<Record<string | number, Addon[]>>(() => groupInitialAddons(initialAddons));
   const [quantity, setQuantity] = useState(initialQuantity);
   const [instructions, setInstructions] = useState(initialInstructions);
+  const [selectedVariantId, setSelectedVariantId] = useState<string | null>(initialVariantId);
 
   const groups = product.addon_groups || [];
 
@@ -93,7 +95,10 @@ export default function AddonModal({
 
   const allAddons = Object.values(selected).flat();
   const addonTotal = allAddons.reduce((sum, a) => sum + Number(a.price) * (a.quantity || 1), 0);
-  const itemTotal = (Number(product.price) + addonTotal) * quantity;
+  const activeVariants = (product.variants || []).filter((variant) => Boolean(variant.is_active) && (!variant.track_inventory || variant.stock_quantity > 0));
+  const selectedVariant = activeVariants.find((variant) => variant.id === selectedVariantId) || null;
+  const itemPrice = Number(selectedVariant?.price_override ?? product.price);
+  const itemTotal = (itemPrice + addonTotal) * quantity;
 
   const isValid = groups.every((g) => {
     const count = getGroupTotalQuantity(g.id);
@@ -105,7 +110,11 @@ export default function AddonModal({
 
   const handleAdd = () => {
     if (!isValid) return;
-    onAdd(product, quantity, allAddons, instructions);
+    if (product.variant_mode && !selectedVariant) {
+      toast.error('Select a size or colour before adding this item');
+      return;
+    }
+    onAdd(product, quantity, allAddons, instructions, selectedVariant);
     onClose();
   };
 
@@ -115,12 +124,27 @@ export default function AddonModal({
         <div className="flex justify-between items-center p-5 border-b border-border">
           <div>
             <h2 className="text-lg font-bold text-foreground">{product.name}</h2>
-            <p className="text-brand font-semibold">{fmt(Number(product.price))}</p>
+            <p className="text-brand font-semibold">{fmt(itemPrice)}</p>
           </div>
           <button onClick={onClose} className="touch-target rounded-full text-muted-foreground hover:text-foreground active:bg-muted" aria-label={t('close')}>
             <X size={20} />
           </button>
         </div>
+        {product.variant_mode && (
+          <div className="px-5 py-4 border-b border-border">
+            <p className="mb-2 text-sm font-semibold text-foreground">Choose size / colour</p>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {activeVariants.map((variant) => (
+                <button key={variant.id} type="button" onClick={() => setSelectedVariantId(variant.id)}
+                  className={`min-h-12 rounded-lg border px-3 py-2 text-start text-sm transition-colors ${selectedVariantId === variant.id ? 'border-brand bg-brand/10 text-brand' : 'border-border hover:border-brand/50'}`}>
+                  <span className="block font-medium">{variant.display_name}</span>
+                  <span className="block text-xs text-muted-foreground">{variant.sku || 'No SKU'} · {fmt(Number(variant.price_override ?? product.price))}</span>
+                </button>
+              ))}
+            </div>
+            {activeVariants.length === 0 && <p className="mt-2 text-sm text-destructive">No active in-stock variants are available.</p>}
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {groups.map((group) => {

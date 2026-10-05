@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuthStore } from '@/store/auth';
 import api from '@/lib/api';
-import { Banknote, ChefHat, Clock, LayoutGrid, TrendingUp, ClipboardList, ArrowRight, Timer, Trophy, Tags, BarChart3, Wallet, RotateCcw, ReceiptText, Hourglass, CalendarDays, Lock } from 'lucide-react';
+import { Banknote, ChefHat, Clock, LayoutGrid, TrendingUp, ClipboardList, ArrowRight, Timer, Trophy, Tags, BarChart3, Wallet, RotateCcw, ReceiptText, Hourglass, CalendarDays, Lock, ShoppingBag } from 'lucide-react';
 import { useTranslations, useLocale, type AppConfig } from 'use-intl';
 import { Ltr } from '@/components/layout/Ltr';
 import { CashCloseModal } from '@/components/dashboard/CashCloseModal';
@@ -179,6 +179,7 @@ const BUILT_IN_PAYMENT_KEYS = {
 
 export default function DashboardPage() {
   const { currentTenant } = useAuthStore();
+  const isRetail = currentTenant?.business_type === 'fashion_retail';
   const t = useTranslations('dashboard');
   const tCommon = useTranslations('common');
   const tPos = useTranslations('pos');
@@ -306,7 +307,16 @@ export default function DashboardPage() {
         },
       ]
     : isToday
-    ? [
+    ? (isRetail
+      ? [{
+          label: t('orders'),
+          value: stats?.runningOrders ?? 0,
+          icon: ShoppingBag,
+          color: 'bg-blue-50 border-blue-200 dark:bg-blue-950/40 dark:border-blue-800/40',
+          iconColor: 'text-blue-600 dark:text-blue-400',
+          href: '/orders',
+        }]
+      : [
         {
           label: t('runningOrders'),
           value: stats?.runningOrders ?? 0,
@@ -343,7 +353,7 @@ export default function DashboardPage() {
           iconColor: 'text-cyan-600 dark:text-cyan-400',
           href: '/tables',
         },
-      ]
+      ])
     : [
         {
           label: t('orders'),
@@ -403,7 +413,7 @@ export default function DashboardPage() {
       iconColor: 'text-teal-600 dark:text-teal-400',
       href: '/orders',
     },
-    ...(periodMode === 'day' ? [{
+    ...(!isRetail && periodMode === 'day' ? [{
       label: t('avgPrepTime'),
       value: insights?.avgPrepTimeMinutes != null ? t('minutesValue', { minutes: insights.avgPrepTimeMinutes }) : '—',
       icon: Timer,

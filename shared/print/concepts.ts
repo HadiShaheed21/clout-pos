@@ -83,6 +83,7 @@ export const PRINT_CONCEPT_IDS = [
   'pos.orderNumber',
   'pos.orderTypeDineIn',
   'pos.orderTypeDelivery',
+  'pos.orderTypeOffline',
   'pos.orderTypeOnline',
   'pos.orderTypeTakeaway',
   'pos.methodCash',

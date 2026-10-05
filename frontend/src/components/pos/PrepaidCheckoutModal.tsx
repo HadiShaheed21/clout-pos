@@ -53,13 +53,14 @@ const LOYALTY_REDEMPTION_RATE = 1;
 
 type PosKey = keyof AppConfig['Messages']['pos'];
 
-type OrderType = 'dine_in' | 'takeaway' | 'delivery' | 'online';
+type OrderType = 'dine_in' | 'takeaway' | 'delivery' | 'offline' | 'online';
 
 // Exhaustively typed lookup for the order-type suffix (no template-literal keys).
 const ORDER_TYPE_SUFFIX_KEYS = {
   dine_in: 'orderTypeSuffix_dine_in',
   takeaway: 'orderTypeSuffix_takeaway',
   delivery: 'orderTypeSuffix_delivery',
+  offline: 'orderTypeSuffix_offline',
   online: 'orderTypeSuffix_online',
 } as const satisfies Record<OrderType, PosKey>;
 

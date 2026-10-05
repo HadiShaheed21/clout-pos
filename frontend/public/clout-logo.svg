@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 190" width="620" height="190" role="img" aria-label="CLOUT">
+  <title>CLOUT</title>
+  <defs>
+    <!-- Brushed-metal banding; the light/dark cadence is what reads as chrome. -->
+    <linearGradient id="chrome" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="16%" stop-color="#c9d2dc"/>
+      <stop offset="34%" stop-color="#7d8794"/>
+      <stop offset="48%" stop-color="#f4f7fa"/>
+      <stop offset="63%" stop-color="#5d6673"/>
+      <stop offset="80%" stop-color="#d6dde5"/>
+      <stop offset="100%" stop-color="#ffffff"/>
+    </linearGradient>
+  </defs>
+  <text x="310" y="146" text-anchor="middle" textLength="552" lengthAdjust="spacingAndGlyphs"
+        font-family="'Old English Text MT', 'Cloister Black', 'Luminari', 'UnifrakturCook', fantasy, serif"
+        font-size="168" font-weight="700" fill="url(#chrome)"
+        stroke="#20242b" stroke-width="2" paint-order="stroke">CLOUT</text>
+</svg>

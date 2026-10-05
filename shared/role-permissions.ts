@@ -117,6 +117,12 @@ export const PERMISSION_CAPABILITIES = [
   { id: 'cloudAccountData', area: 'integrations', labelKey: 'cloudAccountData', allowedRoles: ROLE_ACCESS.owner },
   { id: 'databaseTools', area: 'system', labelKey: 'databaseTools', allowedRoles: ROLE_ACCESS.owner },
   { id: 'serverApp', area: 'orders', labelKey: 'serverApp', allowedRoles: ROLE_ACCESS.serverApp },
+  // Phase 5 online order management. View uses the existing groups so the POS
+  // matrix and the backend gates cannot drift; `serverApp` covers packing work.
+  { id: 'onlineOrdersView', area: 'orders', labelKey: 'onlineOrdersView', allowedRoles: ROLE_ACCESS.allStaff },
+  { id: 'onlineOrdersFulfil', area: 'orders', labelKey: 'onlineOrdersFulfil', allowedRoles: ROLE_ACCESS.allStaff },
+  { id: 'onlineOrdersPayment', area: 'payments', labelKey: 'onlineOrdersPayment', allowedRoles: ROLE_ACCESS.ownerManagerCashier },
+  { id: 'onlineOrdersSweep', area: 'orders', labelKey: 'onlineOrdersSweep', allowedRoles: ROLE_ACCESS.ownerManager },
   { id: 'support', area: 'support', labelKey: 'support', allowedRoles: ROLE_ACCESS.allStaff },
 ] as const satisfies readonly PermissionCapability[];
 

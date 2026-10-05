@@ -113,6 +113,7 @@ const STATUS_LABEL_KEY: Partial<Record<Order['status'], OrdersKey>> = {
 
 // Typed leaf-key order-type map.
 const ORDER_TYPE_KEYS = {
+  offline: 'offline',
   dine_in: 'dineIn',
   takeaway: 'takeaway',
   delivery: 'delivery',
@@ -160,7 +161,10 @@ function HistoryOrderCard({ order, currency, locale }: { order: HistoryOrder; cu
           <TableBody>
             {items.map((item) => (
               <TableRow key={item.id} className="hover:bg-transparent">
-                <TableCell className="px-0 py-1.5 text-sm">{item.product_name}</TableCell>
+                <TableCell className="px-0 py-1.5 text-sm">
+                  <div>{item.product_name}</div>
+                  {item.variant_selection?.display_name && <div className="text-xs text-muted-foreground">{item.variant_selection.display_name}{item.variant_selection.sku ? ` · ${item.variant_selection.sku}` : ''}</div>}
+                </TableCell>
                 <TableCell className="px-0 py-1.5 text-sm text-center tabular-nums">{item.quantity}</TableCell>
                 <TableCell className="px-0 py-1.5 text-sm text-end tabular-nums">{fmt(item.unit_price)}</TableCell>
                 <TableCell className="px-0 py-1.5 text-sm text-end tabular-nums">{fmt(item.subtotal)}</TableCell>

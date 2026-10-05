@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import "./globals.css";
 import MenuActionHandler from "@/components/layout/MenuActionHandler";
 import AuthGuard from "@/components/layout/AuthGuard";
@@ -69,17 +70,23 @@ export default function RootLayout({
           <AuthGuard>{children}</AuthGuard>
           <DirectionalToaster />
         </I18nProvider>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              if ('serviceWorker' in navigator) {
-                window.addEventListener('load', () => {
-                  navigator.serviceWorker.register('/sw.js').catch(() => {});
-                });
+        <Script id="sw-register" strategy="afterInteractive">
+          {`
+            if ('serviceWorker' in navigator) {
+              // afterInteractive can run after 'load' has already fired, which
+              // would leave a bare load listener waiting on an event that never
+              // dispatches again. Register immediately in that case.
+              var register = function () {
+                navigator.serviceWorker.register('/sw.js').catch(function () {});
+              };
+              if (document.readyState === 'complete') {
+                register();
+              } else {
+                window.addEventListener('load', register, { once: true });
               }
-            `,
-          }}
-        />
+            }
+          `}
+        </Script>
       </body>
     </html>
   );

@@ -162,6 +162,7 @@ const BORROWED_KEYS = [
   'pos.orderNumber',
   'pos.orderTypeDineIn',
   'pos.orderTypeDelivery',
+  'pos.orderTypeOffline',
   'pos.orderTypeOnline',
   'pos.orderTypeTakeaway',
   // Payment-method names, ported from web-print.ts's method mapping (#440).

@@ -86,11 +86,28 @@ export interface Product {
   has_image: boolean;
   updated_at: string;
   tags: string[] | null;
-  variants: Record<string, unknown>[] | null;
+  variant_mode?: boolean | number;
+  catalog_status?: 'draft' | 'published' | 'unpublished';
+  variants: ProductVariant[] | null;
   modifiers: Record<string, unknown>[] | null;
   sort_order: number;
   category?: Category;
   addon_groups?: AddonGroup[];
+}
+
+export interface ProductVariant {
+  id: string;
+  product_id: string;
+  display_name: string;
+  sku: string | null;
+  barcode: string | null;
+  price_override: number | null;
+  cost_override: number | null;
+  stock_quantity: number;
+  low_stock_threshold: number;
+  is_active: boolean | number;
+  track_inventory: boolean | number;
+  options?: { option_name: string; option_value: string; color_hex?: string | null }[];
 }
 
 export interface AddonGroup {
@@ -158,7 +175,7 @@ export interface Order {
   order_number: string;
   table_id: string | null;
   customer_id: number | string | null;
-  type: 'dine_in' | 'takeaway' | 'delivery' | 'online';
+  type: 'dine_in' | 'takeaway' | 'delivery' | 'offline' | 'online';
   status: 'pending' | 'preparing' | 'ready' | 'served' | 'completed' | 'cancelled';
   subtotal: number;
   tax_amount: number;
@@ -190,6 +207,13 @@ export interface OrderItem {
   product_id: string;
   product_name: string;
   product_sku: string | null;
+  variant_id?: string | null;
+  variant_selection?: {
+    variant_id?: string;
+    display_name?: string;
+    sku?: string | null;
+    options?: Record<string, string>;
+  } | null;
   unit_price: number;
   quantity: number;
   subtotal: number;
@@ -278,4 +302,5 @@ export interface CartItem {
   quantity: number;
   addons: Addon[];
   special_instructions: string;
+  variant?: ProductVariant | null;
 }

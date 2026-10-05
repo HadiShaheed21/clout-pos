@@ -4166,7 +4166,590 @@ export const MIGRATIONS: { version: number; name: string; up: () => void }[] = [
       `);
     },
   },
+  {
+    version: 85,
+    name: 'fashion_catalogue_variants',
+    up: () => {
+      const productColumns = getColumns(db, 'products');
+      if (!productColumns.includes('catalog_status')) db.exec("ALTER TABLE products ADD COLUMN catalog_status TEXT NOT NULL DEFAULT 'draft' CHECK (catalog_status IN ('draft', 'published', 'unpublished'))");
+      if (!productColumns.includes('published_at')) db.exec('ALTER TABLE products ADD COLUMN published_at TEXT DEFAULT NULL');
+      if (!productColumns.includes('original_price')) db.exec('ALTER TABLE products ADD COLUMN original_price REAL DEFAULT NULL CHECK (original_price IS NULL OR original_price >= 0)');
+      if (!productColumns.includes('variant_mode')) db.exec('ALTER TABLE products ADD COLUMN variant_mode INTEGER NOT NULL DEFAULT 0 CHECK (variant_mode IN (0, 1))');
+
+      const orderItemColumns = getColumns(db, 'order_items');
+      if (!orderItemColumns.includes('variant_id')) db.exec('ALTER TABLE order_items ADD COLUMN variant_id TEXT DEFAULT NULL');
+      const purchaseItemColumns = getColumns(db, 'purchase_items');
+      if (!purchaseItemColumns.includes('variant_id')) db.exec('ALTER TABLE purchase_items ADD COLUMN variant_id TEXT DEFAULT NULL');
+      const movementColumns = getColumns(db, 'stock_movements');
+      if (!movementColumns.includes('variant_id')) db.exec('ALTER TABLE stock_movements ADD COLUMN variant_id TEXT DEFAULT NULL');
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS product_option_groups (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          normalized_name TEXT NOT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(product_id, normalized_name)
+        );
+        CREATE TABLE IF NOT EXISTS product_option_values (
+          id TEXT PRIMARY KEY,
+          option_group_id TEXT NOT NULL REFERENCES product_option_groups(id) ON DELETE CASCADE,
+          label TEXT NOT NULL,
+          normalized_label TEXT NOT NULL,
+          color_hex TEXT DEFAULT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(option_group_id, normalized_label)
+        );
+        CREATE TABLE IF NOT EXISTS product_variants (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+          option_signature TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          sku TEXT DEFAULT NULL,
+          barcode TEXT DEFAULT NULL,
+          price_override REAL DEFAULT NULL CHECK (price_override IS NULL OR price_override >= 0),
+          cost_override REAL DEFAULT NULL CHECK (cost_override IS NULL OR cost_override >= 0),
+          track_inventory INTEGER NOT NULL DEFAULT 1 CHECK (track_inventory IN (0, 1)),
+          stock_quantity INTEGER NOT NULL DEFAULT 0 CHECK (stock_quantity >= 0),
+          low_stock_threshold INTEGER NOT NULL DEFAULT 0 CHECK (low_stock_threshold >= 0),
+          is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+          deleted_at TEXT DEFAULT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(product_id, option_signature)
+        );
+        CREATE TABLE IF NOT EXISTS product_variant_option_values (
+          variant_id TEXT NOT NULL REFERENCES product_variants(id) ON DELETE CASCADE,
+          option_group_id TEXT NOT NULL REFERENCES product_option_groups(id) ON DELETE RESTRICT,
+          option_value_id TEXT NOT NULL REFERENCES product_option_values(id) ON DELETE RESTRICT,
+          PRIMARY KEY(variant_id, option_group_id),
+          UNIQUE(variant_id, option_value_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_product_variants_product_active ON product_variants(product_id, is_active, deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_variant_option_values_option ON product_variant_option_values(option_value_id);
+      `);
+    },
+  },
+  {
+    version: 86,
+    name: 'fashion_catalogue_identifiers_and_audit',
+    up: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS catalog_identifier_assignments (
+          id TEXT PRIMARY KEY,
+          identifier_type TEXT NOT NULL CHECK (identifier_type IN ('sku', 'barcode')),
+          normalized_value TEXT NOT NULL COLLATE NOCASE,
+          owner_kind TEXT NOT NULL CHECK (owner_kind IN ('product', 'variant')),
+          product_id TEXT DEFAULT NULL REFERENCES products(id) ON DELETE RESTRICT,
+          variant_id TEXT DEFAULT NULL REFERENCES product_variants(id) ON DELETE RESTRICT,
+          assigned_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          assigned_by TEXT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+          released_at TEXT DEFAULT NULL,
+          released_by TEXT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+          release_reason TEXT DEFAULT NULL,
+          CHECK ((owner_kind = 'product' AND product_id IS NOT NULL AND variant_id IS NULL) OR (owner_kind = 'variant' AND variant_id IS NOT NULL AND product_id IS NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_catalog_identifier_active ON catalog_identifier_assignments(identifier_type, normalized_value) WHERE released_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_catalog_identifier_owner ON catalog_identifier_assignments(owner_kind, product_id, variant_id) WHERE released_at IS NULL;
+        CREATE TABLE IF NOT EXISTS catalog_audit_log (
+          id TEXT PRIMARY KEY,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          action TEXT NOT NULL,
+          actor_user_id TEXT DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_catalog_audit_entity ON catalog_audit_log(entity_type, entity_id, created_at DESC);
+      `);
+
+      // Preserve legacy identifiers without choosing winners for old conflicts.
+      const products = db.prepare("SELECT id, sku, barcode FROM products WHERE deleted_at IS NULL").all() as { id: string; sku: string | null; barcode: string | null }[];
+      const insert = db.prepare(`INSERT OR IGNORE INTO catalog_identifier_assignments
+        (id, identifier_type, normalized_value, owner_kind, product_id, assigned_at)
+        VALUES (?, ?, ?, 'product', ?, ?)`);
+      const duplicates = new Set<string>();
+      for (const product of products) {
+        for (const [type, raw] of [['sku', product.sku], ['barcode', product.barcode]] as const) {
+          const normalized = typeof raw === 'string' ? raw.trim().toUpperCase() : '';
+          if (!normalized) continue;
+          const duplicateKey = `${type}:${normalized}`;
+          const existing = db.prepare('SELECT product_id FROM catalog_identifier_assignments WHERE identifier_type = ? AND normalized_value = ? AND released_at IS NULL').get(type, normalized) as { product_id: string } | undefined;
+          if (existing && existing.product_id !== product.id) { duplicates.add(duplicateKey); continue; }
+          insert.run(generateShortId('catalog_identifier_assignments'), type, normalized, product.id, now());
+        }
+      }
+      for (const duplicate of duplicates) {
+        db.prepare(`INSERT INTO catalog_audit_log (id, entity_type, entity_id, action, metadata_json, created_at)
+          VALUES (?, 'identifier', ?, 'legacy_identifier_conflict', ?, ?)`)
+          .run(generateShortId('catalog_audit_log'), duplicate, JSON.stringify({ identifier: duplicate }), now());
+      }
+    },
+  },
+  {
+    version: 87,
+    name: 'fashion_catalogue_images_and_collections',
+    up: () => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS product_images (
+          id TEXT PRIMARY KEY,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+          data_uri TEXT DEFAULT NULL,
+          uses_legacy_image INTEGER NOT NULL DEFAULT 0 CHECK (uses_legacy_image IN (0, 1)),
+          mime_type TEXT DEFAULT NULL,
+          byte_size INTEGER DEFAULT NULL,
+          width INTEGER DEFAULT NULL,
+          height INTEGER DEFAULT NULL,
+          alt_text TEXT DEFAULT NULL,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          is_primary INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK ((uses_legacy_image = 1 AND data_uri IS NULL) OR (uses_legacy_image = 0 AND data_uri IS NOT NULL))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_product_images_primary ON product_images(product_id) WHERE is_primary = 1;
+        CREATE INDEX IF NOT EXISTS idx_product_images_order ON product_images(product_id, sort_order, created_at);
+        CREATE TABLE IF NOT EXISTS collections (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          slug TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          description TEXT DEFAULT NULL,
+          is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS collection_products (
+          collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY(collection_id, product_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_products_order ON collection_products(collection_id, sort_order);
+      `);
+      const legacyImages = db.prepare("SELECT id FROM products WHERE image_url IS NOT NULL AND image_url != ''").all() as { id: string }[];
+      const insertLegacy = db.prepare(`INSERT OR IGNORE INTO product_images
+        (id, product_id, uses_legacy_image, sort_order, is_primary, created_at, updated_at)
+        VALUES (?, ?, 1, 0, 1, ?, ?)`);
+      for (const product of legacyImages) insertLegacy.run(generateShortId('product_images'), product.id, now(), now());
+    },
+  },
+  {
+    version: 88,
+    name: 'shop_guest_carts',
+    up: () => {
+      db.exec(`
+        -- Guest storefront carts. Holds NO customer identity and NO price:
+        -- quantities only, so a cart can never be treated as a quote, a
+        -- reservation or an order. Prices are re-derived on every read.
+        CREATE TABLE IF NOT EXISTS shop_carts (
+          id TEXT PRIMARY KEY,
+          -- SHA-256 of the opaque cookie token. The raw token never reaches the
+          -- database, so a database copy cannot be replayed as a cart session.
+          token_hash TEXT NOT NULL UNIQUE,
+          expires_at TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_carts_expiry ON shop_carts(expires_at);
+
+        CREATE TABLE IF NOT EXISTS shop_cart_items (
+          id TEXT PRIMARY KEY,
+          cart_id TEXT NOT NULL REFERENCES shop_carts(id) ON DELETE CASCADE,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+          -- NULL for a non-variant product; otherwise the chosen variant.
+          variant_id TEXT REFERENCES product_variants(id) ON DELETE RESTRICT,
+          quantity INTEGER NOT NULL CHECK (quantity > 0),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          -- One row per product+variant combination, so re-adding merges
+          -- quantities instead of creating duplicate lines.
+          UNIQUE (cart_id, product_id, variant_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_cart_items_cart ON shop_cart_items(cart_id, created_at);
+      `);
+    },
+  },
+  {
+    version: 89,
+    name: 'shop_online_orders',
+    up: () => {
+      // Additive reservation counters. Reservations are tracked SEPARATELY from
+      // sale stock so POS sale, cancellation and refund semantics are untouched:
+      // available = stock_quantity - reserved. Default 0 means every existing
+      // product behaves exactly as before.
+      const productColumns = getColumns(db, 'products');
+      if (!productColumns.includes('shop_reserved_quantity')) {
+        db.exec('ALTER TABLE products ADD COLUMN shop_reserved_quantity REAL NOT NULL DEFAULT 0');
+      }
+      const variantColumns = getColumns(db, 'product_variants');
+      if (!variantColumns.includes('shop_reserved_quantity')) {
+        db.exec('ALTER TABLE product_variants ADD COLUMN shop_reserved_quantity REAL NOT NULL DEFAULT 0');
+      }
+
+      db.exec(`
+        -- Online ecommerce orders are deliberately NOT stored in \`orders\`.
+        -- The POS table is restaurant-shaped (tables, guest counts, cooking
+        -- timers, REAL rupee money) and is swept by tax, reporting and staff
+        -- dashboards; mixing unfulfilled web orders in would corrupt them.
+        CREATE TABLE IF NOT EXISTS shop_orders (
+          id TEXT PRIMARY KEY,
+          -- Customer-facing reference, e.g. CLOUT-7F3K9Q. Unique, so a guess
+          -- cannot collide and cannot be used to enumerate other orders.
+          reference TEXT NOT NULL UNIQUE,
+          -- The guest cart this order was created from, for audit and retries.
+          cart_id TEXT REFERENCES shop_carts(id) ON DELETE SET NULL,
+          idempotency_key TEXT NOT NULL,
+          -- Fulfillment status. Kept separate from payment_status on purpose:
+          -- opening WhatsApp is not payment.
+          status TEXT NOT NULL DEFAULT 'pending_review'
+            CHECK (status IN ('pending_review', 'confirmed', 'cancelled')),
+          payment_status TEXT NOT NULL DEFAULT 'unverified'
+            CHECK (payment_status IN ('unverified', 'verified', 'refunded')),
+          currency TEXT NOT NULL,
+          -- Integer minor units (paise). Never REAL: the POS money columns are
+          -- floats and this path must not inherit that.
+          subtotal_minor_units INTEGER NOT NULL CHECK (subtotal_minor_units >= 0),
+          item_count INTEGER NOT NULL DEFAULT 0,
+          -- Fulfilment contact details. Only what shipping the parcel needs.
+          customer_name TEXT NOT NULL,
+          customer_phone TEXT NOT NULL,
+          delivery_address TEXT NOT NULL,
+          delivery_city TEXT NOT NULL,
+          delivery_state TEXT NOT NULL,
+          delivery_pincode TEXT NOT NULL,
+          delivery_instructions TEXT,
+          -- WhatsApp handoff is customer-initiated; we record intent only and
+          -- never claim the message was sent or that payment arrived.
+          whatsapp_handoff_at TEXT,
+          cancelled_at TEXT,
+          cancellation_reason TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          -- One checkout per cart: a cart cannot be spent twice, which is what
+          -- stops a reused cart deducting stock a second time.
+          UNIQUE (cart_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_orders_created ON shop_orders(created_at);
+        CREATE INDEX IF NOT EXISTS idx_shop_orders_status ON shop_orders(status);
+
+        CREATE TABLE IF NOT EXISTS shop_order_items (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL REFERENCES shop_orders(id) ON DELETE CASCADE,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+          variant_id TEXT REFERENCES product_variants(id) ON DELETE RESTRICT,
+          -- Snapshot of the name at purchase time so later catalogue renames do
+          -- not rewrite history.
+          product_name TEXT NOT NULL,
+          variant_display_name TEXT,
+          options_json TEXT,
+          quantity INTEGER NOT NULL CHECK (quantity > 0),
+          unit_price_minor_units INTEGER NOT NULL CHECK (unit_price_minor_units >= 0),
+          line_total_minor_units INTEGER NOT NULL CHECK (line_total_minor_units >= 0),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_order_items_order ON shop_order_items(order_id);
+        -- Customer's own claim that they paid. This is NOT verification: staff
+        -- must confirm independently, and the payment_status column stays
+        -- 'unverified' until they do. Stored separately so a declaration can never be
+        -- mistaken for staff confirmation.
+        CREATE TABLE IF NOT EXISTS shop_payment_declarations (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL REFERENCES shop_orders(id) ON DELETE CASCADE,
+          -- Free-text reference the customer may quote (UPI ref, etc). Length
+          -- is capped at write time so this cannot become an unbounded blob.
+          reference TEXT,
+          declared_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_payment_declarations_order ON shop_payment_declarations(order_id);
+
+        -- Idempotency is scoped to the guest cart, so a key from one shopper can
+        -- never collide with or reveal another shopper's order.
+        CREATE TABLE IF NOT EXISTS shop_checkout_idempotency (
+          cart_id TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          -- Hash of the request payload. Reusing a key with a DIFFERENT payload
+          -- is rejected rather than silently returning the old order.
+          payload_hash TEXT NOT NULL,
+          order_id TEXT REFERENCES shop_orders(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (cart_id, idempotency_key)
+        );
+      `);
+    },
+  },
+  {
+    version: 91,
+    name: 'shop_online_order_management',
+    up: () => {
+      // Phase 4 reserved stock through a bare counter with no owner record, so
+      // nothing could be released safely. These three tables make releases
+      // ledger-backed, exactly-once, and auditable.
+      db.exec(`
+        -- One row per (order, product, variant) reservation. released_at is the
+        -- exactly-once guard: a release only touches rows still NULL, so a
+        -- retried cancel, a racing expiry and a manual release cannot both act.
+        CREATE TABLE IF NOT EXISTS shop_order_reservations (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL REFERENCES shop_orders(id) ON DELETE CASCADE,
+          product_id TEXT NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
+          variant_id TEXT REFERENCES product_variants(id) ON DELETE RESTRICT,
+          quantity INTEGER NOT NULL CHECK (quantity > 0),
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          released_at TEXT DEFAULT NULL,
+          released_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          release_reason TEXT
+        );
+        -- SQLite treats NULLs as distinct in UNIQUE constraints, so the
+        -- table-level constraint would happily allow duplicate rows for a
+        -- product with no variant. These two partial indexes close that gap.
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_shop_order_reservations_variant
+          ON shop_order_reservations(order_id, product_id, variant_id)
+          WHERE variant_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_shop_order_reservations_base
+          ON shop_order_reservations(order_id, product_id)
+          WHERE variant_id IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_shop_order_reservations_active
+          ON shop_order_reservations(order_id, released_at);
+
+        -- Append-only audit of staff payment decisions. A customer declaration
+        -- lives in shop_payment_declarations and is deliberately a different
+        -- record: a declaration is never a verification.
+        CREATE TABLE IF NOT EXISTS shop_order_payment_actions (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL REFERENCES shop_orders(id) ON DELETE CASCADE,
+          actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+          action TEXT NOT NULL CHECK (action IN ('verified', 'rejected')),
+          utr_reference TEXT,
+          note TEXT,
+          previous_payment_status TEXT NOT NULL,
+          new_payment_status TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_order_payment_actions_order
+          ON shop_order_payment_actions(order_id, created_at);
+
+        -- Append-only fulfilment history: who moved the order, from what, to
+        -- what, and why. Keeps the full order lifecycle reconstructable.
+        CREATE TABLE IF NOT EXISTS shop_order_events (
+          id TEXT PRIMARY KEY,
+          order_id TEXT NOT NULL REFERENCES shop_orders(id) ON DELETE CASCADE,
+          actor_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+          from_status TEXT,
+          to_status TEXT NOT NULL,
+          reason TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_shop_order_events_order
+          ON shop_order_events(order_id, created_at);
+      `);
+
+      rebuildShopOrdersForPhase5(db);
+    },
+  },
 ];
+
+/**
+ * Phase 5 rebuild of `shop_orders`.
+ *
+ * Phase 4 allowed only (pending_review|confirmed|cancelled) and
+ * (unverified|verified|refunded), which cannot express a fulfilment lifecycle or
+ * a rejected payment. SQLite cannot ALTER a CHECK constraint, so this uses the
+ * standard rebuild: create a replacement table with widened constraints, copy
+ * every row, swap, and restore indexes.
+ *
+ * Deliberately NOT touched: the POS `orders`/`bills` tables and
+ * `stock_movements`. Online revenue must never enter in-store X/Z reports, and
+ * fulfilment records a normal `sale` stock movement carrying a
+ * reference_type='shop_order', so existing stock reports keep working unchanged.
+ */
+function rebuildShopOrdersForPhase5(dbInstance: Database.Database): void {
+  dbInstance.exec(`
+    CREATE TABLE IF NOT EXISTS shop_orders_v91 (
+      id TEXT PRIMARY KEY,
+      reference TEXT NOT NULL UNIQUE,
+      cart_id TEXT REFERENCES shop_carts(id) ON DELETE SET NULL,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending_review'
+        CHECK (status IN ('pending_review', 'accepted', 'preparing', 'packed',
+                          'dispatched', 'completed', 'rejected', 'cancelled', 'expired')),
+      payment_status TEXT NOT NULL DEFAULT 'unverified'
+        CHECK (payment_status IN ('unverified', 'verified', 'rejected', 'refunded')),
+      currency TEXT NOT NULL,
+      subtotal_minor_units INTEGER NOT NULL CHECK (subtotal_minor_units >= 0),
+      item_count INTEGER NOT NULL DEFAULT 0,
+      customer_name TEXT NOT NULL,
+      customer_phone TEXT NOT NULL,
+      delivery_address TEXT NOT NULL,
+      delivery_city TEXT NOT NULL,
+      delivery_state TEXT NOT NULL,
+      delivery_pincode TEXT NOT NULL,
+      delivery_instructions TEXT,
+      whatsapp_handoff_at TEXT,
+      -- Anchors the 2-hour reservation window to the authoritative checkout time.
+      reservation_expires_at TEXT,
+      -- Set when fulfilment actually consumed the stock, so a retry cannot
+      -- deduct twice.
+      fulfilled_at TEXT,
+      cancelled_at TEXT,
+      cancellation_reason TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE (cart_id)
+    );
+  `);
+
+  const existing = dbInstance.prepare('SELECT COUNT(*) AS n FROM shop_orders').get() as { n: number };
+
+  if (existing.n > 0) {
+    // created_at is copied verbatim so the window stays anchored to real time.
+    dbInstance.exec(`
+      INSERT INTO shop_orders_v91 (
+        id, reference, cart_id, idempotency_key, status, payment_status, currency,
+        subtotal_minor_units, item_count,
+        customer_name, customer_phone, delivery_address, delivery_city,
+        delivery_state, delivery_pincode, delivery_instructions,
+        whatsapp_handoff_at, cancelled_at, cancellation_reason,
+        created_at, updated_at, reservation_expires_at
+      )
+      SELECT
+        id, reference, cart_id, idempotency_key,
+        -- Phase 4 wrote 'confirmed' where Phase 5 writes 'accepted'. Map it
+        -- forward so pre-existing orders keep their meaning and survive the
+        -- widened CHECK constraint.
+        CASE status WHEN 'confirmed' THEN 'accepted' ELSE status END,
+        payment_status, currency,
+        subtotal_minor_units, item_count,
+        customer_name, customer_phone, delivery_address, delivery_city,
+        delivery_state, delivery_pincode, delivery_instructions,
+        whatsapp_handoff_at, cancelled_at, cancellation_reason,
+        created_at, updated_at,
+        -- Legacy rows predate this column, so seed NULL and let the backfill
+        -- below derive the window from each row's own created_at.
+        CAST(NULL AS TEXT)
+      FROM shop_orders;
+    `);
+    // Derive the window only after the copy, so every row — new or legacy —
+    // anchors it to its own checkout time rather than being left NULL and
+    // therefore never auto-expiring.
+    dbInstance.exec(`
+      UPDATE shop_orders_v91
+      SET reservation_expires_at = datetime(created_at, '+2 hours')
+      WHERE reservation_expires_at IS NULL;
+    `);
+    console.log(`[MIGRATION v91] shop_orders rebuilt, ${existing.n} row(s) preserved`);
+  }
+
+  // FKs must be off while the parent table is swapped, or child FKs would be
+  // violated mid-rebuild. Restored in `finally` even if a step throws.
+  dbInstance.pragma('foreign_keys = OFF');
+  try {
+    dbInstance.exec('DROP TABLE shop_orders;');
+    dbInstance.exec('ALTER TABLE shop_orders_v91 RENAME TO shop_orders;');
+    dbInstance.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_shop_orders_reference ON shop_orders(reference);
+      CREATE INDEX IF NOT EXISTS idx_shop_orders_created ON shop_orders(created_at);
+      CREATE INDEX IF NOT EXISTS idx_shop_orders_status ON shop_orders(status);
+      CREATE INDEX IF NOT EXISTS idx_shop_orders_payment ON shop_orders(payment_status);
+      -- The sweep only ever considers pending rows, so index the pair.
+      CREATE INDEX IF NOT EXISTS idx_shop_orders_expiry
+        ON shop_orders(reservation_expires_at, status);
+    `);
+  } finally {
+    dbInstance.pragma('foreign_keys = ON');
+  }
+
+  backfillReservationLedger(dbInstance);
+
+  // Child FK declarations travel with the table, but verify rather than assume.
+  const fkIssues = dbInstance.pragma('foreign_key_check') as unknown[];
+  if (fkIssues.length > 0) {
+    throw new Error(`shop_orders rebuild left ${fkIssues.length} foreign key issue(s)`);
+  }
+}
+
+/**
+ * Attributes Phase 4's unledgered reservations to their orders.
+ *
+ * Only tracked-inventory lines on non-terminal orders can hold stock, so those
+ * are the only rows considered. The per-order sum is compared against the actual
+ * counter for each product/variant BEFORE writing anything; if it does not
+ * reconcile, nothing is written and no counter is touched.
+ */
+function backfillReservationLedger(dbInstance: Database.Database): void {
+  interface Row { order_id: string; product_id: string; variant_id: string | null; quantity: number }
+
+  const simple = dbInstance.prepare(`
+    SELECT oi.order_id, oi.product_id, NULL AS variant_id, oi.quantity
+    FROM shop_order_items oi
+    JOIN shop_orders o ON o.id = oi.order_id
+    JOIN products p ON p.id = oi.product_id
+    WHERE oi.variant_id IS NULL
+      AND COALESCE(p.track_inventory, 0) = 1
+      AND o.status NOT IN ('cancelled', 'expired', 'rejected')
+  `).all() as Row[];
+
+  const varianted = dbInstance.prepare(`
+    SELECT oi.order_id, oi.product_id, oi.variant_id, oi.quantity
+    FROM shop_order_items oi
+    JOIN shop_orders o ON o.id = oi.order_id
+    JOIN product_variants v ON v.id = oi.variant_id
+    WHERE oi.variant_id IS NOT NULL
+      AND COALESCE(v.track_inventory, 0) = 1
+      AND o.status NOT IN ('cancelled', 'expired', 'rejected')
+  `).all() as Row[];
+
+  const all = [...simple, ...varianted];
+
+  const totals = new Map<string, number>();
+  for (const row of all) {
+    const key = `${row.product_id}::${row.variant_id ?? ''}`;
+    totals.set(key, (totals.get(key) ?? 0) + Number(row.quantity));
+  }
+
+  let attributionSafe = true;
+  for (const [key, expected] of totals) {
+    const separator = key.indexOf('::');
+    const productId = key.slice(0, separator);
+    const variantId = key.slice(separator + 2);
+    const counter = variantId
+      ? dbInstance.prepare('SELECT shop_reserved_quantity FROM product_variants WHERE id = ?').get(variantId) as any
+      : dbInstance.prepare('SELECT shop_reserved_quantity FROM products WHERE id = ?').get(productId) as any;
+    if (!counter || Number(counter.shop_reserved_quantity) !== Number(expected)) {
+      attributionSafe = false;
+      console.warn(`[MIGRATION v91] counter mismatch for ${key}: `
+        + `counter=${counter?.shop_reserved_quantity} attributed=${expected}`);
+    }
+  }
+
+  if (!attributionSafe) {
+    console.warn('[MIGRATION v91] Reservation attribution could not be proven — ledger backfill SKIPPED. '
+      + 'Counters left untouched; manual reconciliation required before stock can be released.');
+    return;
+  }
+
+  if (all.length === 0) return;
+
+  const insert = dbInstance.prepare(`
+    INSERT OR IGNORE INTO shop_order_reservations (id, order_id, product_id, variant_id, quantity, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  for (const row of all) {
+    insert.run(
+      generateShortId('shop_order_reservations'), row.order_id, row.product_id,
+      row.variant_id, row.quantity, now(),
+    );
+  }
+  console.log(`[MIGRATION v91] Backfilled ${all.length} reservation ledger row(s)`);
+}
 
 function syncBackupBeforeMigration(fromVersion: number, toVersion: number): void {
   if (buildingIdealSchema) return;
@@ -4925,6 +5508,14 @@ function seedInstallDefaults(): void {
   insert('kot_printing_enabled', 'true');
   insert('server_app_bill_printing_enabled', 'false');
   insert('printer_trim_decimals', 'false');
+  // CLOUT ecommerce: staff-set WhatsApp business number for assisted checkout.
+  // Empty by default so no invented number is ever shipped or dialled.
+  insert('shop_whatsapp_number', '');
+  // CLOUT assisted checkout: static UPI details for the payment step. The QR
+  // itself is generated from `shop_upi_id` at request time (never a placeholder
+  // image); staff can change any of these in POS Settings.
+  insert('shop_upi_id', 'paytm.s2x4y1r@pty');
+  insert('shop_upi_payee_name', 'Abdul Baeis M V');
   insert('bill_template', 'classic');
   insert('bill_footer_message', '');
   insert('bill_show_name', 'true');

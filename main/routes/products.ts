@@ -10,6 +10,7 @@ import * as https from 'https';
 import * as net from 'net';
 import { asyncHandler } from '../middleware/async-handler';
 import { recordStockMovement } from '../services/stock-movements';
+import { productVariants, reserveIdentifier, writeCatalogueAudit } from '../services/catalogue';
 
 const MAX_FETCH_BYTES = 10 * 1024 * 1024;
 
@@ -463,7 +464,7 @@ router.get('/', (req: Request, res: Response) => {
     const db = getDatabase();
     let query = `SELECT p.id, p.category_id, p.name, p.description, p.price, p.cost, p.sku, p.barcode,
       p.sale_unit, p.allow_fractional_quantity, p.weight_precision, p.quality,
-      p.is_active, p.sort_order, p.track_inventory, p.stock_quantity, p.low_stock_threshold,
+      p.is_active, p.sort_order, p.track_inventory, p.stock_quantity, p.low_stock_threshold, p.catalog_status, p.published_at, p.original_price, p.variant_mode,
       p.tax_type, p.tax_rate, p.tax_category_id, p.tax_behavior, p.cb_percent, p.tags, p.deleted_at, p.created_at, p.updated_at,
       CASE WHEN p.image_url IS NULL OR p.image_url = '' THEN 0 ELSE 1 END AS has_image
       FROM products p 
@@ -489,8 +490,11 @@ router.get('/', (req: Request, res: Response) => {
       if (!barcode) {
         return res.json({ products: [] });
       }
-      query += ' AND p.barcode = ?';
-      params.push(barcode);
+      query += ` AND (p.barcode = ? OR EXISTS (
+        SELECT 1 FROM product_variants pv
+        WHERE pv.product_id = p.id AND pv.barcode = ? AND pv.deleted_at IS NULL
+      ))`;
+      params.push(barcode, barcode);
     }
     if (req.query.low_stock === 'true') {
       query += ' AND p.track_inventory = 1 AND p.stock_quantity <= p.low_stock_threshold';
@@ -510,6 +514,7 @@ router.get('/', (req: Request, res: Response) => {
         tags: parseTags(product.tags),
         category: rel.category,
         addon_groups: rel.addon_groups,
+        variants: product.variant_mode ? productVariants(db, product.id) : [],
       });
     });
 
@@ -596,7 +601,7 @@ router.get('/:id', (req: Request, res: Response) => {
     const relations = loadProductRelationsBatch(db, [product as any]);
     const rel = relations.get((product as any).id) || { category: null, addon_groups: [] };
 
-    res.json({ product: serializeProduct({ ...(product as any), tags: parseTags((product as any).tags), category: rel.category, addon_groups: rel.addon_groups }) });
+    res.json({ product: serializeProduct({ ...(product as any), tags: parseTags((product as any).tags), category: rel.category, addon_groups: rel.addon_groups, variants: (product as any).variant_mode ? productVariants(db, (product as any).id) : [] }) });
   } catch (error: any) {
     console.error("[API] Internal error:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -827,6 +832,9 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
           insertAgp.run(agId, id);
         }
       }
+      reserveIdentifier(db, { type: 'sku', value: normalizeNullableString(sku), ownerKind: 'product', productId: id, actorUserId: String((req as any).user.userId) });
+      reserveIdentifier(db, { type: 'barcode', value: normalizedBarcode, ownerKind: 'product', productId: id, actorUserId: String((req as any).user.userId) });
+      writeCatalogueAudit(db, String((req as any).user.userId), 'product', id, 'created', { name: productName });
     });
     insertProduct();
 
@@ -834,6 +842,8 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
     res.status(201).json({ product: serializeProduct(product) });
   } catch (error: any) {
     console.error("[API] Internal error:", error);
+    if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (String(error?.message || '').includes('UNIQUE constraint failed')) return res.status(409).json({ error: 'SKU or barcode is already assigned' });
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -923,6 +933,19 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
     const hasWeightPrecision = hasOwn(req.body, 'weight_precision');
     const hasQuality = hasOwn(req.body, 'quality');
 
+    const previousSku = (product as any).sku ?? null;
+    const previousBarcode = (product as any).barcode ?? null;
+    const skuIsChanging = hasSku && normalizeNullableString(sku) !== previousSku;
+    const barcodeIsChanging = hasBarcode && normalizedBarcode !== previousBarcode;
+    if ((skuIsChanging || barcodeIsChanging) && (req as any).user.role !== 'owner') {
+      return res.status(403).json({ error: 'Only the owner may release or reassign SKU and barcode identifiers' });
+    }
+    for (const [type, previous, changing] of [['sku', previousSku, skuIsChanging], ['barcode', previousBarcode, barcodeIsChanging]] as const) {
+      if (!changing || !previous) continue;
+      const active = db.prepare('SELECT 1 FROM catalog_identifier_assignments WHERE identifier_type = ? AND normalized_value = ? AND released_at IS NULL').get(type, previous);
+      if (active) return res.status(409).json({ error: `Release the existing ${type} with an audit reason before assigning a new value` });
+    }
+
     const addonGroupValidation = validateAddonGroupIds(db, addon_group_ids);
     if (addonGroupValidation.error) {
       return res.status(400).json({ error: addonGroupValidation.error });
@@ -1008,6 +1031,11 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
           }
         }
       }
+      const saved = db.prepare('SELECT sku, barcode FROM products WHERE id = ?').get(req.params.id) as { sku: string | null; barcode: string | null };
+      const productId = String(req.params.id);
+      reserveIdentifier(db, { type: 'sku', value: saved.sku, ownerKind: 'product', productId, actorUserId: String((req as any).user.userId) });
+      reserveIdentifier(db, { type: 'barcode', value: saved.barcode, ownerKind: 'product', productId, actorUserId: String((req as any).user.userId) });
+      writeCatalogueAudit(db, String((req as any).user.userId), 'product', productId, 'updated', { sku_changed: hasSku, barcode_changed: hasBarcode });
     });
     updateProduct();
 
@@ -1015,6 +1043,8 @@ router.put('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res:
     res.json({ product: serializeProduct(updated) });
   } catch (error: any) {
     console.error("[API] Internal error:", error);
+    if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message });
+    if (String(error?.message || '').includes('UNIQUE constraint failed')) return res.status(409).json({ error: 'SKU or barcode is already assigned' });
     res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -1026,7 +1056,6 @@ router.delete('/:id', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, r
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
     }
-
     db.prepare('UPDATE products SET deleted_at = ? WHERE id = ?').run(now(), req.params.id);
     res.json({ message: 'Product deleted' });
   } catch (error: any) {
@@ -1054,6 +1083,9 @@ router.post('/:id/stock', requireRole(...ROLE_ACCESS.ownerManager), (req: Reques
     const product = db.prepare('SELECT * FROM products WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
     if (!product) {
       return res.status(404).json({ error: 'Product not found' });
+    }
+    if ((product as any).variant_mode) {
+      return res.status(409).json({ error: 'Adjust stock on individual variants for this product' });
     }
 
     const previousQuantity = Number((product as { stock_quantity: number }).stock_quantity);

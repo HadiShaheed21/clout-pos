@@ -9,7 +9,7 @@ import { usePosSettingsStore } from '@/store/pos-settings';
 import { useSidebar } from '@/components/ui/sidebar';
 import toast from 'react-hot-toast';
 import { ShoppingCart, X } from 'lucide-react';
-import type { Addon, Category, Product, Table, Bill, Order, CartItem } from '@/lib/types';
+import type { Addon, Category, Product, ProductVariant, Table, Bill, Order, CartItem } from '@/lib/types';
 import { useConfirm } from '@/hooks/use-confirm';
 import {
   Drawer, DrawerContent, DrawerTrigger,
@@ -449,13 +449,13 @@ export default function POSPage() {
     setAddonProduct(product);
   };
 
-  const handleAddonAdd = (product: Product, quantity: number, addons: Addon[], instructions: string) => {
-    cart.addItem(product, quantity, addons, instructions);
+  const handleAddonAdd = (product: Product, quantity: number, addons: Addon[], instructions: string, variant?: ProductVariant | null) => {
+    cart.addItem(product, quantity, addons, instructions, variant);
   };
 
-  const handleEditItemSave = (_product: Product, quantity: number, addons: Addon[], instructions: string) => {
+  const handleEditItemSave = (_product: Product, quantity: number, addons: Addon[], instructions: string, variant?: ProductVariant | null) => {
     if (!editingCartItem) return;
-    cart.updateItemDetails(editingCartItem.id, quantity, addons, instructions);
+    cart.updateItemDetails(editingCartItem.id, quantity, addons, instructions, variant);
   };
 
   // A modal already open means the scan (if one lands) isn't meant for the
@@ -466,7 +466,7 @@ export default function POSPage() {
   useBarcodeScanner((code) => {
     const scan = resolveScannedProduct(code, products);
     if (scan) {
-      if (scan.scaleBarcode) cart.addItem(scan.product, scan.quantity);
+      if (scan.scaleBarcode || scan.variant) cart.addItem(scan.product, scan.quantity, [], '', scan.variant);
       else handleProductClick(scan.product);
     } else {
       toast.error(t('barcodeNotFound', { code }));
@@ -502,6 +502,7 @@ export default function POSPage() {
         // Add new items to an existing order with a durable retry key.
         const newItems = cart.items.map((item) => ({
           product_id: item.product.id,
+          variant_id: item.variant?.id,
           quantity: item.quantity,
           addons: item.addons.length > 0
             ? item.addons.map((a) => ({ id: a.id, name: a.name, price: a.price, quantity: a.quantity || 1 }))
@@ -545,6 +546,7 @@ export default function POSPage() {
           external_order_id: cart.orderType === 'online' ? cart.externalOrderId || undefined : undefined,
           items: cart.items.map((item) => ({
             product_id: item.product.id,
+            variant_id: item.variant?.id,
             quantity: item.quantity,
             addons: item.addons.length > 0
               ? item.addons.map((a) => ({ id: a.id, name: a.name, price: a.price, quantity: a.quantity || 1 }))
@@ -596,6 +598,7 @@ export default function POSPage() {
     setSubmitting(true);
     const orderItems = cart.items.map((item) => ({
       product_id: item.product.id,
+      variant_id: item.variant?.id,
       quantity: item.quantity,
       addons: item.addons.length > 0
         ? item.addons.map((a) => ({ id: a.id, name: a.name, price: a.price, quantity: a.quantity || 1 }))
@@ -884,6 +887,7 @@ export default function POSPage() {
     try {
       const items = cart.items.map((item) => ({
         product_id: item.product.id,
+        variant_id: item.variant?.id,
         quantity: item.quantity,
         addons: item.addons.length > 0
           ? item.addons.map((a) => ({ id: a.id, name: a.name, price: a.price, quantity: a.quantity || 1 }))
@@ -1039,7 +1043,7 @@ export default function POSPage() {
       />
 
       {/* Main content area */}
-      <div className="flex flex-1 min-h-0 overflow-hidden p-4 gap-4">
+      <div className="flex flex-1 min-h-0 overflow-hidden p-3 sm:p-4 gap-3 sm:gap-4">
         {/* Product Grid — full width on mobile, flex-1 on desktop */}
         <div className="flex-1 min-w-0 h-full flex flex-col">
           <ProductGrid
@@ -1111,6 +1115,7 @@ export default function POSPage() {
           initialQuantity={editingCartItem.quantity}
           initialAddons={editingCartItem.addons}
           initialInstructions={editingCartItem.special_instructions}
+          initialVariantId={editingCartItem.variant?.id}
           onAdd={handleEditItemSave}
           onClose={() => setEditingCartItem(null)}
         />

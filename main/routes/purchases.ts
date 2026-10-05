@@ -23,8 +23,8 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
         .run(purchaseId, typeof req.body.supplier === 'string' ? req.body.supplier.trim() || null : null,
           typeof req.body.reference === 'string' ? req.body.reference.trim().slice(0, 120) || null : null,
           purchasedAt, actor, createdAt, createdAt);
-      const insertItem = db.prepare(`INSERT INTO purchase_items (purchase_id, product_id, quantity, unit_cost, total)
-        VALUES (?, ?, ?, ?, ?)`);
+      const insertItem = db.prepare(`INSERT INTO purchase_items (purchase_id, product_id, variant_id, quantity, unit_cost, total)
+        VALUES (?, ?, ?, ?, ?, ?)`);
       for (const item of items) {
         if (!item || typeof item.product_id !== 'string' || typeof item.quantity !== 'number' || !Number.isFinite(item.quantity) || item.quantity <= 0
           || typeof item.unit_cost !== 'number' || !Number.isFinite(item.unit_cost) || item.unit_cost < 0) {
@@ -32,12 +32,15 @@ router.post('/', requireRole(...ROLE_ACCESS.ownerManager), (req: Request, res: R
         }
         const product = db.prepare('SELECT id, track_inventory, stock_quantity FROM products WHERE id = ? AND deleted_at IS NULL').get(item.product_id) as { id: string; track_inventory: number; stock_quantity: number } | undefined;
         if (!product) throw Object.assign(new Error('Product not found'), { statusCode: 404 });
+        const variant = item.variant_id ? db.prepare('SELECT * FROM product_variants WHERE id = ? AND product_id = ? AND deleted_at IS NULL').get(item.variant_id, product.id) as any : null;
+        if (item.variant_id && !variant) throw Object.assign(new Error('Variant not found for product'), { statusCode: 404 });
+        if (variant && (!Number.isSafeInteger(item.quantity) || item.quantity <= 0)) throw Object.assign(new Error('Variant purchases require a positive whole-unit quantity'), { statusCode: 400 });
         if (!product.track_inventory) throw Object.assign(new Error('Purchases require inventory tracking to be enabled for every product'), { statusCode: 400 });
         const lineTotal = item.quantity * item.unit_cost;
-        insertItem.run(purchaseId, product.id, item.quantity, item.unit_cost, lineTotal);
-        db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, cost = ?, updated_at = ? WHERE id = ?')
-          .run(item.quantity, item.unit_cost, createdAt, product.id);
-        recordStockMovement(db, { productId: product.id, quantityDelta: item.quantity, previousQuantity: product.stock_quantity,
+        insertItem.run(purchaseId, product.id, variant?.id || null, item.quantity, item.unit_cost, lineTotal);
+        if (variant) db.prepare('UPDATE product_variants SET stock_quantity = stock_quantity + ?, cost_override = ?, updated_at = ? WHERE id = ?').run(item.quantity, item.unit_cost, createdAt, variant.id);
+        else db.prepare('UPDATE products SET stock_quantity = stock_quantity + ?, cost = ?, updated_at = ? WHERE id = ?').run(item.quantity, item.unit_cost, createdAt, product.id);
+        recordStockMovement(db, { productId: product.id, variantId: variant?.id || null, quantityDelta: item.quantity, previousQuantity: variant?.stock_quantity ?? product.stock_quantity,
           movementType: 'purchase', referenceType: 'purchase', referenceId: purchaseId, actorUserId: actor, createdAt });
         total += lineTotal;
       }

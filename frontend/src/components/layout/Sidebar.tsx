@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import {
   LayoutDashboard,
   ShoppingCart,
+  PackageCheck,
   ClipboardList,
   Package,
   Grid3X3,
@@ -77,6 +78,9 @@ const ALL_NAV_ITEMS: NavItem[] = [
   { href: '/tables', labelKey: 'tables', icon: Grid3X3, roles: ROLE_ACCESS.ownerManager, businessTypes: ['restaurant'] },
   { href: '/settings?tab=kds', labelKey: 'kds', icon: ChefHat, roles: ROLE_ACCESS.ownerManager, businessTypes: ['restaurant'] },
   { href: '/online-store', labelKey: 'onlineStore', icon: Globe2, roles: ROLE_ACCESS.ownerManager, businessTypes: ['fashion_retail'] },
+  // Phase 5: staff online-order management. Counters need to see it, and the
+  // payment route independently re-checks the role server-side.
+  { href: '/online-orders', labelKey: 'onlineOrders', icon: PackageCheck, roles: ROLE_ACCESS.allStaff, businessTypes: ['fashion_retail'] },
   { href: '/customers', labelKey: 'customers', icon: Users, roles: ROLE_ACCESS.ownerManager, businessTypes: null },
   { href: '/staff', labelKey: 'staff', icon: UserCog, roles: ROLE_ACCESS.ownerManager, businessTypes: null },
   { href: '/settings', labelKey: 'settings', icon: Settings, roles: ROLE_ACCESS.ownerManager, businessTypes: null },
