@@ -1,10 +1,12 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { formatMinor } from '@/lib/shop/format';
 import { Minus, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { fetchProduct, shopImageUrl } from '@/lib/shop/catalogue-client';
+import { slugFromShopPathname } from '@/lib/shop/slug-from-pathname';
 import { useShopCartStore } from '@/store/shop-cart-store';
 import type { ShopApiImage, ShopApiProduct } from '@/lib/shop/api-types';
 import { ShopEmptyState, ShopErrorState, ShopLoadingState, useShopFetch } from './ShopLoadStates';
@@ -89,9 +91,13 @@ function VariantList({ product }: { product: ShopApiProduct }) {
 }
 
 export function ApiProductDetail({ id }: { id: string }) {
+  // The static export serves one prerendered shell for every /shop/p/* URL, so
+  // the live pathname — not the build-time seed param — carries the product id.
+  const pathname = usePathname();
+  const productId = slugFromShopPathname(pathname, '/shop/p/') ?? id;
   const state = useShopFetch<ShopApiProduct>(
-    async (signal) => (await fetchProduct(id, signal)).product,
-    [id],
+    async (signal) => (await fetchProduct(productId, signal)).product,
+    [productId],
   );
 
   if (state.status === 'loading') {

@@ -1,7 +1,9 @@
 'use client';
 
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { fetchAllProducts, fetchCollections } from '@/lib/shop/catalogue-client';
+import { slugFromShopPathname } from '@/lib/shop/slug-from-pathname';
 import type { ShopApiCollection, ShopApiProduct } from '@/lib/shop/api-types';
 import { ApiProductGrid } from './ApiProductSection';
 import { ShopEmptyState, ShopErrorState, ShopLoadingState, useShopFetch } from './ShopLoadStates';
@@ -43,11 +45,13 @@ export function ApiCollectionsIndex() {
   );
 }
 
-/** Products belonging to one collection, using the server-provided link. */
+/** Products belonging to one collection; the live pathname wins over the seed slug. */
 export function ApiCollectionProducts({ slug }: { slug: string }) {
+  const pathname = usePathname();
+  const collectionSlug = slugFromShopPathname(pathname, '/shop/collections/') ?? slug;
   const state = useShopFetch<ShopApiProduct[]>(
-    async (signal) => (await fetchAllProducts(signal)).filter((product) => product.collection?.slug === slug),
-    [slug],
+    async (signal) => (await fetchAllProducts(signal)).filter((product) => product.collection?.slug === collectionSlug),
+    [collectionSlug],
   );
 
   if (state.status === 'loading') return <ShopLoadingState label="Loading collection" />;
@@ -61,5 +65,20 @@ export function ApiCollectionProducts({ slug }: { slug: string }) {
     );
   }
   return <ApiProductGrid products={state.data} />;
+}
+
+function formatCollectionLabel(slug: string): string {
+  return slug
+    .split('-')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+/** Slug-derived label that follows the live pathname over the seed slug. */
+export function ApiCollectionLabel({ slug }: { slug: string }) {
+  const pathname = usePathname();
+  const liveSlug = slugFromShopPathname(pathname, '/shop/collections/') ?? slug;
+  return <>{formatCollectionLabel(liveSlug)}</>;
 }
 

@@ -132,18 +132,46 @@ function rewriteNextExportPath(reqPath: string): string {
   return prefix + rewrittenName + extPart;
 }
 
+/**
+ * Dynamic shop segments cannot be enumerated at build time, so the static
+ * export contains one prerendered seed shell per segment. Requests for real
+ * slugs must hydrate that shell — falling through to the root page would run
+ * the root redirect and bounce the visitor into the POS/dashboard.
+ */
+const SHOP_SEED_SHELLS: Array<{ pattern: RegExp; shell: string }> = [
+  { pattern: /^shop\/p\/[^/]+$/, shell: 'shop/p/product' },
+  { pattern: /^shop\/collections\/[^/]+$/, shell: 'shop/collections/collection' },
+];
+
 /** Resolve a clean application route to its own Next.js static-export page. */
 export function resolveStaticPage(frontendDir: string, reqPath: string): string {
   const route = reqPath.replace(/^\/+|\/+$/g, '');
-  if (!route) return path.join(frontendDir, 'index.html');
+  const rootPage = path.join(frontendDir, 'index.html');
+  if (!route) return rootPage;
+
   // Static app routes contain only path-safe segments. Unknown or suspicious
   // paths fall back to the root page without ever escaping frontendDir.
-  if (!/^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(route)) {
-    return path.join(frontendDir, 'index.html');
+  const pathSafe = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(route);
+  if (pathSafe) {
+    const candidate = resolveContainedPath(frontendDir, route, 'index.html');
+    if (candidate && fs.existsSync(candidate)) return candidate;
   }
-  const candidate = resolveContainedPath(frontendDir, route, 'index.html');
-  if (!candidate) return path.join(frontendDir, 'index.html');
-  return fs.existsSync(candidate) ? candidate : path.join(frontendDir, 'index.html');
+
+  // Seed shells are fixed paths inside frontendDir; the request slug is ignored.
+  for (const { pattern, shell } of SHOP_SEED_SHELLS) {
+    if (pattern.test(route)) {
+      const seed = resolveContainedPath(frontendDir, shell, 'index.html');
+      if (seed && fs.existsSync(seed)) return seed;
+    }
+  }
+
+  if (!pathSafe) return rootPage;
+  // Unknown product categories stay inside the storefront, never the root page.
+  if (/^shop\/c\/[^/]+$/.test(route)) {
+    const shopIndex = resolveContainedPath(frontendDir, 'shop', 'index.html');
+    if (shopIndex && fs.existsSync(shopIndex)) return shopIndex;
+  }
+  return rootPage;
 }
 
 export function startServer(): Promise<void> {
