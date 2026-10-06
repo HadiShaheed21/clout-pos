@@ -63,13 +63,18 @@ export interface IssuedCartToken {
   csrfToken: string;
 }
 
+/** Fresh CSRF token for the double-submit cookie. */
+export function issueCsrfToken(): string {
+  return randomBytes(TOKEN_BYTES).toString('base64url');
+}
+
 /** Creates a new opaque cart token. Never derived from personal data. */
 export function issueCartToken(): IssuedCartToken {
   const token = randomBytes(TOKEN_BYTES).toString('base64url');
   return {
     cookieValue: `${token}.${signCartToken(token)}`,
     token,
-    csrfToken: randomBytes(TOKEN_BYTES).toString('base64url'),
+    csrfToken: issueCsrfToken(),
   };
 }
 

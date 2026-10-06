@@ -453,8 +453,8 @@ async function main() {
     {
       const client = await guestWithItem('co-basic', 1);
       const forged = makeShopClient(baseUrl);
-      forged.jar.clout_cart = client.jar.clout_cart.slice(0, -4) + 'AAAA';
-      forged.jar.clout_cart_csrf = client.jar.clout_cart_csrf;
+      forged.setCookie('clout_cart', client.jar.clout_cart.slice(0, -4) + 'AAAA', '/api/shop');
+      forged.setCookie('clout_cart_csrf', client.jar.clout_cart_csrf);
       const res = await forged.post('/api/shop/checkout', { customer: VALID_CUSTOMER });
       assertEqual(res.status, 401, 'U: forged cookie 401');
     }

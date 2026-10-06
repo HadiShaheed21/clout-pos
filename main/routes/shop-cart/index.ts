@@ -24,7 +24,7 @@ import { getTenantCurrency } from '../../services/refund';
 import {
   CART_COOKIE, CART_CSRF_COOKIE, CART_CSRF_HEADER,
   MAX_CART_LINES, MAX_LINE_QUANTITY,
-  buildCartView, createCart, findCartByToken, issueCartToken, loadCartProduct,
+  buildCartView, createCart, findCartByToken, issueCartToken, issueCsrfToken, loadCartProduct,
   priceAndAvailability, purgeExpiredCarts, touchCart, verifyCartToken, verifyCsrfToken,
 } from '../../services/shop-cart';
 
@@ -71,6 +71,14 @@ function cookieSecure(): boolean {
   return process.env.NODE_ENV === 'production';
 }
 
+/** Issues the double-submit CSRF cookie at Path=/ so page JS can read it. */
+function setCsrfCookie(res: Response, csrfToken: string): void {
+  const maxAge = Math.floor(CART_COOKIE_MS / 1000);
+  const attrs = ['Path=/', 'SameSite=Lax', `Max-Age=${maxAge}`];
+  if (cookieSecure()) attrs.push('Secure');
+  res.append('Set-Cookie', `${CART_CSRF_COOKIE}=${csrfToken}; ${attrs.join('; ')}`);
+}
+
 function setCartCookie(res: Response, cookieValue: string, csrfToken: string): void {
   const maxAge = Math.floor(CART_COOKIE_MS / 1000);
   const attrs = ['Path=/api/shop', 'HttpOnly', 'SameSite=Lax', `Max-Age=${maxAge}`];
@@ -78,9 +86,21 @@ function setCartCookie(res: Response, cookieValue: string, csrfToken: string): v
   res.append('Set-Cookie', `${CART_COOKIE}=${cookieValue}; ${attrs.join('; ')}`);
   // The CSRF token is deliberately NOT HttpOnly: the browser must read it to
   // echo it back in a header. That is the double-submit pattern.
-  const csrfAttrs = ['Path=/', 'SameSite=Lax', `Max-Age=${maxAge}`];
-  if (cookieSecure()) csrfAttrs.push('Secure');
-  res.append('Set-Cookie', `${CART_CSRF_COOKIE}=${csrfToken}; ${csrfAttrs.join('; ')}`);
+  setCsrfCookie(res, csrfToken);
+  expireLegacyCsrfCookie(res);
+}
+
+/**
+ * Expires the pre-fix `clout_cart_csrf` issued under `Path=/api/shop`.
+ * Same name + different path = two distinct cookies, and the stale one then
+ * shadows the new token in `document.cookie`/Cookie ordering, breaking the
+ * double-submit check. A `Path=/` expiry cannot remove it, so the exact legacy
+ * scope is used. Fires on every cart read alongside a fresh `Path=/` token.
+ */
+function expireLegacyCsrfCookie(res: Response): void {
+  const legacyAttrs = ['Path=/api/shop', 'SameSite=Lax', 'Max-Age=0'];
+  if (cookieSecure()) legacyAttrs.push('Secure');
+  res.append('Set-Cookie', `${CART_CSRF_COOKIE}=; ${legacyAttrs.join('; ')}`);
 }
 
 /** Uniform 404 for unknown, forged or expired cart: no existence oracle. */
@@ -128,21 +148,32 @@ function parseId(value: unknown): string | null {
 }
 
 /** Ensures a cart exists for this request, issuing one if the cookie was new. */
-function ensureCart(req: Request, res: Response): { token: string; cart: NonNullable<ReturnType<typeof findCartByToken>> } {
+function ensureCart(req: Request, res: Response): {
+  token: string;
+  cart: NonNullable<ReturnType<typeof findCartByToken>>;
+  created: boolean;
+} {
   const existing = resolveCart(req);
-  if (existing) return existing;
+  if (existing) return { ...existing, created: false };
   const db = getDatabase();
   const issued = issueCartToken();
   const cart = createCart(db, issued.token);
   setCartCookie(res, issued.cookieValue, issued.csrfToken);
-  return { token: issued.token, cart };
+  return { token: issued.token, cart, created: true };
 }
 
 /** GET /api/shop/cart — this guest's cart, priced live from the catalogue. */
 router.get('/', cartReadRateLimit, (req: Request, res: Response) => {
   const db = getDatabase();
   purgeExpiredCarts(db);
-  const { cart } = ensureCart(req, res);
+  const { cart, created } = ensureCart(req, res);
+  // The server cannot see which path scope a request cookie was issued under,
+  // so a returning visitor may hold only the legacy Path=/api/shop token —
+  // invisible to page JS, which then sends no header and 403s. Re-mint the
+  // token at Path=/ on every read; page JS re-reads document.cookie per
+  // request, so rotation is safe.
+  if (!created) setCsrfCookie(res, issueCsrfToken());
+  expireLegacyCsrfCookie(res);
   res.json(buildCartView(db, cart, getTenantCurrency(db)));
 });
 

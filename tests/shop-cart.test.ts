@@ -37,49 +37,18 @@ const {
 const { shopRoutes } = require('../main/routes/shop');
 const cartRoutes = require('../main/routes/shop-cart').default;
 const { isPublicShopCartPath } = require('../main/routes/shop-cart');
-
-const PNG_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const { makeShopClient } = require('./helpers/shop-client');
 
 /**
- * A browser-like client: keeps its own cookie jar and echoes the CSRF cookie in
- * the request header, mirroring how the storefront will behave.
+ * A browser-like client: keeps a path-aware cookie jar (RFC 6265) and echoes
+ * the CSRF cookie in the request header, mirroring how the storefront behaves.
  */
 function makeClient(baseUrl: string) {
-  const jar: Record<string, string> = {};
-
-  async function call(method: string, urlPath: string, body?: unknown, extraHeaders: Record<string, string> = {}) {
-    const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (jar.clout_cart_csrf) headers['x-clout-csrf'] = jar.clout_cart_csrf;
-    const cookies = Object.entries(jar).map(([k, v]) => `${k}=${v}`).join('; ');
-    if (cookies) headers.Cookie = cookies;
-
-    const response = await fetch(baseUrl + urlPath, {
-      method,
-      headers,
-      body: body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body)),
-    });
-
-    for (const raw of response.headers.getSetCookie?.() ?? []) {
-      const [pair] = raw.split(';');
-      const idx = pair.indexOf('=');
-      if (idx > 0) jar[pair.slice(0, idx).trim()] = pair.slice(idx + 1).trim();
-    }
-
-    const text = await response.text();
-    let data: any = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
-    return { status: response.status, data, headers: response.headers };
-  }
-
-  return {
-    jar,
-    get: (p: string, h?: Record<string, string>) => call('GET', p, undefined, h),
-    post: (p: string, b?: unknown, h?: Record<string, string>) => call('POST', p, b, h),
-    patch: (p: string, b?: unknown, h?: Record<string, string>) => call('PATCH', p, b, h),
-    del: (p: string, h?: Record<string, string>) => call('DELETE', p, undefined, h),
-  };
+  return makeShopClient(baseUrl);
 }
+
+/** Legacy flat-jar client, removed in favour of the shared path-aware client. */
+const PNG_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 function seedCartFixtures(db: any) {
   seedCategory(db, 'cat-cart', 'Clothing');
   const publish = (id: string) =>
@@ -168,6 +137,71 @@ async function main() {
       // uses the root path; the identity cookie stays scoped to the API.
       assert(/Path=\/(;|$)/i.test(csrfCookie), 'A: csrf cookie uses Path=/ (readable from /shop/*)');
       assert(/Path=\/api\/shop/i.test(rawCookie), 'A: cart cookie stays scoped to Path=/api/shop');
+      // The pre-fix `Path=/api/shop` CSRF scope must be expired so a stale
+      // same-named cookie cannot shadow the new token in document.cookie.
+      const legacyKiller = res.headers.getSetCookie().find((c: string) =>
+        c.startsWith('clout_cart_csrf=;') && /Path=\/api\/shop/i.test(c));
+      assert(legacyKiller, 'A: legacy Path=/api/shop csrf cookie expired');
+      assert(/Max-Age=0/i.test(legacyKiller), 'A: legacy killer uses Max-Age=0');
+      assert(/SameSite=Lax/i.test(legacyKiller), 'A: legacy killer is SameSite=Lax');
+    }
+
+    console.log('\n--- A2: existing cart read also expires the legacy cookie ---');
+    {
+      const res = await guest.get('/api/shop/cart');
+      assertEqual(res.status, 200, 'A2: existing cart 200');
+      const legacyKiller = res.headers.getSetCookie().find((c: string) =>
+        c.startsWith('clout_cart_csrf=;') && /Path=\/api\/shop/i.test(c));
+      assert(legacyKiller, 'A2: legacy killer present on existing-cart read');
+      assertEqual(res.data.item_count, 0, 'A2: cart still empty');
+    }
+
+    console.log('\n--- A3: fresh Path=/ token wins over stale Path=/api/shop cookie ---');
+    {
+      // A browser holding the OLD `Path=/api/shop` CSRF cookie that ALSO has
+      // the new `Path=/` token: document.cookie on /shop/* cannot see the
+      // legacy path, and the backend's last-wins parse resolves to the fresh
+      // token (longest path sorts first on the wire). The write succeeds.
+      const stale = makeShopClient(baseUrl);
+      await stale.get('/api/shop/cart');
+      const freshToken = stale.jar.clout_cart_csrf;
+      assert(freshToken, 'A3: fresh csrf token issued');
+      // Simulate the pre-fix cookie the browser still holds.
+      stale.setCookie('clout_cart_csrf', 'stale-prefixed-token-value', '/api/shop');
+      const res = await stale.post('/api/shop/cart/items', { product_id: 'cart-basic', quantity: 1 });
+      assertEqual(res.status, 200, 'A3: write succeeds with fresh token despite stale cookie');
+      assertEqual(res.data.items.length, 1, 'A3: one line added');
+      // The cart read path expires the legacy scope.
+      const refresh = await stale.get('/api/shop/cart');
+      assertEqual(refresh.status, 200, 'A3: refresh read 200');
+      const killer = refresh.headers.getSetCookie().find((c: string) =>
+        c.startsWith('clout_cart_csrf=;') && /Path=\/api\/shop/i.test(c));
+      assert(killer, 'A3: legacy Path=/api/shop scope expired');
+    }
+
+    console.log('\n--- A4: legacy-only cookie (true pre-fix state) is refused, then healed ---');
+    {
+      // TRUE pre-fix scenario: the browser holds ONLY the old Path=/api/shop
+      // cookie and has never received a Path=/ token. document.cookie on
+      // /shop/* cannot see it, so no header is sent and the write is refused.
+      // The next cart read then issues the fresh token and kills the legacy.
+      const legacy = makeShopClient(baseUrl);
+      const seeded = makeShopClient(baseUrl);
+      await seeded.get('/api/shop/cart');
+      // Transplant ONLY the identity cookie, plus a legacy-path CSRF cookie
+      // carrying the live token value (as if issued pre-fix under that path).
+      legacy.setCookie('clout_cart', seeded.jar.clout_cart, '/api/shop');
+      legacy.setCookie('clout_cart_csrf', seeded.jar.clout_cart_csrf, '/api/shop');
+      const refused = await legacy.post('/api/shop/cart/items', { product_id: 'cart-basic', quantity: 1 });
+      assertEqual(refused.status, 403, 'A4: legacy-only cookie write refused with 403');
+      const heal = await legacy.get('/api/shop/cart');
+      assertEqual(heal.status, 200, 'A4: cart read heals with 200');
+      assert(legacy.jar.clout_cart_csrf, 'A4: fresh Path=/ token issued');
+      const killer = heal.headers.getSetCookie().find((c: string) =>
+        c.startsWith('clout_cart_csrf=;') && /Path=\/api\/shop/i.test(c));
+      assert(killer, 'A4: legacy Path=/api/shop scope expired');
+      const recovered = await legacy.post('/api/shop/cart/items', { product_id: 'cart-basic', quantity: 1 });
+      assertEqual(recovered.status, 200, 'A4: write succeeds after healing');
     }
 
     console.log('\n--- B: add a simple product; server-derived price ---');
@@ -335,8 +369,8 @@ async function main() {
     console.log('\n--- O: forged and missing cart identifiers rejected ---');
     {
       const forged = makeClient(baseUrl);
-      forged.jar.clout_cart = 'not-a-real-token.signature';
-      forged.jar.clout_cart_csrf = 'x';
+      forged.setCookie('clout_cart', 'not-a-real-token.signature', '/api/shop');
+      forged.setCookie('clout_cart_csrf', 'x');
       const res = await forged.patch('/api/shop/cart/items/anything', { quantity: 1 });
       assert(res.status === 404 || res.status === 400, 'O: forged token refused (' + res.status + ')');
 
@@ -370,7 +404,7 @@ async function main() {
       const subtotal = first.data.subtotal_minor_units;
       // A brand-new client instance sharing the same cookie jar simulates a refresh.
       const afterRefresh = makeClient(baseUrl);
-      Object.assign(afterRefresh.jar, guest.jar);
+      afterRefresh.copyJarFrom(guest);
       const second = await afterRefresh.get('/api/shop/cart');
       assertEqual(second.data.items.length, count, 'Q: cart survives a fresh connection');
       assertEqual(second.data.subtotal_minor_units, subtotal, 'Q: subtotal stable across requests');
