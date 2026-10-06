@@ -78,7 +78,7 @@ function setCartCookie(res: Response, cookieValue: string, csrfToken: string): v
   res.append('Set-Cookie', `${CART_COOKIE}=${cookieValue}; ${attrs.join('; ')}`);
   // The CSRF token is deliberately NOT HttpOnly: the browser must read it to
   // echo it back in a header. That is the double-submit pattern.
-  const csrfAttrs = ['Path=/api/shop', 'SameSite=Lax', `Max-Age=${maxAge}`];
+  const csrfAttrs = ['Path=/', 'SameSite=Lax', `Max-Age=${maxAge}`];
   if (cookieSecure()) csrfAttrs.push('Secure');
   res.append('Set-Cookie', `${CART_CSRF_COOKIE}=${csrfToken}; ${csrfAttrs.join('; ')}`);
 }

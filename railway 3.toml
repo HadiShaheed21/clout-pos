@@ -1,0 +1,8 @@
+[build]
+buildCommand = "npm run build:frontend && npm run build"
+
+[deploy]
+startCommand = "node dev-server.js"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 300
+restartPolicyType = "ALWAYS"

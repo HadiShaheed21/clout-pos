@@ -164,6 +164,10 @@ async function main() {
       assert(/SameSite=Lax/i.test(rawCookie), 'A: cart cookie is SameSite=Lax');
       const csrfCookie = res.headers.getSetCookie().find((c: string) => c.startsWith('clout_cart_csrf='));
       assert(!/HttpOnly/i.test(csrfCookie), 'A: csrf cookie readable for double-submit');
+      // The CSRF cookie must be visible to storefront JS on /shop/* pages, so it
+      // uses the root path; the identity cookie stays scoped to the API.
+      assert(/Path=\/(;|$)/i.test(csrfCookie), 'A: csrf cookie uses Path=/ (readable from /shop/*)');
+      assert(/Path=\/api\/shop/i.test(rawCookie), 'A: cart cookie stays scoped to Path=/api/shop');
     }
 
     console.log('\n--- B: add a simple product; server-derived price ---');
