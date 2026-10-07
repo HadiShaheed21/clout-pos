@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useShopCartStore } from '@/store/shop-cart-store';
 import { formatMinor } from '@/lib/shop/format';
 import { CartLinesList } from './CartLinesList';
@@ -24,7 +25,12 @@ export function ShopCartView() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const router = useRouter();
   const busy = pendingItemId !== null;
+  // Checkout is blocked ONLY when the server says the bag cannot be ordered:
+  // empty, or any line unavailable / unpublished / over available stock (all
+  // surfaced as `has_unavailable_items`). Stock is still re-checked server-side.
+  const canCheckout = status === 'ready' && cart.items.length > 0 && !cart.has_unavailable_items && !busy;
 
   return (
     <>
@@ -95,10 +101,11 @@ export function ShopCartView() {
 
                 <button
                   type="button"
-                  disabled
-                  className="mt-6 inline-flex min-h-12 w-full cursor-not-allowed items-center justify-center bg-[#c9c7c2] px-6 text-sm font-semibold text-white"
+                  onClick={() => router.push('/shop/checkout')}
+                  disabled={!canCheckout}
+                  className="mt-6 inline-flex min-h-12 w-full items-center justify-center bg-[#101010] px-6 text-sm font-semibold text-white transition-colors hover:bg-[#2a2a2a] disabled:cursor-not-allowed disabled:bg-[#c9c7c2] disabled:hover:bg-[#c9c7c2]"
                 >
-                  Checkout — coming next
+                  Checkout
                 </button>
 
                 <button

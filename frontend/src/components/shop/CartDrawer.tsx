@@ -80,6 +80,9 @@ function DrawerLine({ line }: { line: CartLine }) {
   const remove = useShopCartStore((state) => state.remove);
   const busy = pendingItemId === line.item_id;
   const purchasable = line.status === 'ok';
+  // Mirrors the bag page: a line over available stock can still be REDUCED.
+  const canDecrement = !busy && line.quantity > 1
+    && line.status !== 'unpublished' && line.availability !== 'out_of_stock';
   const src = cartImageUrl(line.image_url);
 
   return (
@@ -112,7 +115,7 @@ function DrawerLine({ line }: { line: CartLine }) {
         <div className="mt-auto flex items-center justify-between gap-3 pt-2">
           <div className="flex items-center border border-[#d9d8d3]">
             <button type="button" onClick={() => { void setQuantity(line.item_id, line.quantity - 1); }}
-              disabled={busy || line.quantity <= 1 || !purchasable} aria-label="Decrease quantity"
+              disabled={!canDecrement} aria-label="Decrease quantity"
               className="flex size-8 items-center justify-center disabled:opacity-30">
               <Minus size={12} aria-hidden />
             </button>

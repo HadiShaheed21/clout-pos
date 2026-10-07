@@ -32,6 +32,11 @@ function CartLineRow({ line }: { line: CartLine }) {
 
   const busy = pendingItemId === line.item_id;
   const purchasable = line.status === 'ok';
+  // Quantity may still be REDUCED on a line that is over available stock
+  // (status 'unavailable', but not sold out or unpublished) so the shopper can
+  // bring it back within stock and unblock checkout.
+  const canDecrement = !busy && line.quantity > 1
+    && line.status !== 'unpublished' && line.availability !== 'out_of_stock';
   const src = cartImageUrl(line.image_url);
 
   return (
@@ -89,7 +94,7 @@ function CartLineRow({ line }: { line: CartLine }) {
           <div className="flex items-center border border-[#d9d8d3]" role="group"
             aria-label={`Quantity for ${line.product_name}`}>
             <button type="button" onClick={() => { void setQuantity(line.item_id, line.quantity - 1); }}
-              disabled={busy || line.quantity <= 1 || !purchasable}
+              disabled={!canDecrement}
               aria-label="Decrease quantity"
               className="flex size-9 items-center justify-center disabled:opacity-30">
               <Minus size={14} aria-hidden />
