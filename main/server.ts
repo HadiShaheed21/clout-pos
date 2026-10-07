@@ -143,6 +143,18 @@ const SHOP_SEED_SHELLS: Array<{ pattern: RegExp; shell: string }> = [
   { pattern: /^shop\/collections\/[^/]+$/, shell: 'shop/collections/collection' },
 ];
 
+/** Hosts whose root `/` opens the customer storefront instead of the POS. */
+const STOREFRONT_HOSTS = new Set(['clout.in', 'www.clout.in']);
+
+/**
+ * True when the request's Host addresses the customer storefront domain.
+ * Port is stripped so `clout.in:3001` matches in local development.
+ */
+export function isStorefrontHost(hostHeader: string | undefined): boolean {
+  const host = (hostHeader ?? '').split(':')[0].trim().toLowerCase();
+  return STOREFRONT_HOSTS.has(host);
+}
+
 /** Resolve a clean application route to its own Next.js static-export page. */
 export function resolveStaticPage(frontendDir: string, reqPath: string): string {
   const route = reqPath.replace(/^\/+|\/+$/g, '');
@@ -270,6 +282,12 @@ export function startServer(): Promise<void> {
 
       // Serve each Next.js static route index directly to avoid root redirects.
       app.get(/^(?!\/api|\/kds).*$/, staticRouteRateLimit(), (req: Request, res: Response) => {
+        // Root lands on the storefront only on the customer domains; every
+        // other path (and every other host) resolves exactly as before.
+        if (req.path === '/' && isStorefrontHost(req.headers.host)) {
+          res.redirect(302, '/shop');
+          return;
+        }
         res.sendFile(resolveStaticPage(frontendDir, req.path), { dotfiles: 'allow' });
       });
     } else {

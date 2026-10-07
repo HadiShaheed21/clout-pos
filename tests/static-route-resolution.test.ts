@@ -12,7 +12,7 @@ Module._load = function (request: string, parent: unknown, isMain: boolean) {
   return originalLoad.apply(this, arguments as any);
 };
 
-const { resolveStaticPage } = require('../main/server');
+const { resolveStaticPage, isStorefrontHost } = require('../main/server');
 const { slugFromShopPathname } = require('../frontend/src/lib/shop/slug-from-pathname');
 const { fetchProduct } = require('../frontend/src/lib/shop/catalogue-client');
 
@@ -56,6 +56,20 @@ assert.equal(resolveStaticPage(fixture, '/shop'), path.join(fixture, 'shop', 'in
 assert.equal(resolveStaticPage(fixture, '/dashboard'), path.join(fixture, 'dashboard', 'index.html'));
 assert.equal(resolveStaticPage(fixture, '/pos'), path.join(fixture, 'pos', 'index.html'));
 assert.equal(resolveStaticPage(fixture, '/auth/login'), path.join(fixture, 'auth', 'login', 'index.html'));
+
+// Root landing splits by Host: storefront domains get /shop (302), everything
+// else — staff host, local dev, the current Railway domain, no Host at all —
+// keeps the existing root → /dashboard → AuthGuard/login behavior.
+assert.equal(isStorefrontHost('clout.in'), true);
+assert.equal(isStorefrontHost('www.clout.in'), true);
+assert.equal(isStorefrontHost('clout.in:3001'), true);
+assert.equal(isStorefrontHost('pos.clout.in'), false);
+assert.equal(isStorefrontHost('localhost:3001'), false);
+assert.equal(isStorefrontHost('clout-pos-production.up.railway.app'), false);
+assert.equal(isStorefrontHost(undefined), false);
+
+// Explicit route resolution stays host-independent (the helper only gates `/`).
+assert.equal(resolveStaticPage(fixture, '/'), path.join(fixture, 'index.html'));
 
 async function verifyProductRequest(): Promise<void> {
   // The shell hydrates at the real URL: the product id must come from the live
