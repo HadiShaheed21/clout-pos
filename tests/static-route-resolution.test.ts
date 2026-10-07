@@ -60,10 +60,12 @@ assert.equal(resolveStaticPage(fixture, '/auth/login'), path.join(fixture, 'auth
 // Root landing splits by Host: storefront domains get /shop (302), everything
 // else — staff host, local dev, the current Railway domain, no Host at all —
 // keeps the existing root → /dashboard → AuthGuard/login behavior.
-assert.equal(isStorefrontHost('clout.in'), true);
-assert.equal(isStorefrontHost('www.clout.in'), true);
-assert.equal(isStorefrontHost('clout.in:3001'), true);
-assert.equal(isStorefrontHost('pos.clout.in'), false);
+assert.equal(isStorefrontHost('cloutclothn.in'), true);
+assert.equal(isStorefrontHost('www.cloutclothn.in'), true);
+assert.equal(isStorefrontHost('cloutclothn.in:3001'), true);
+assert.equal(isStorefrontHost('pos.cloutclothn.in'), false);
+assert.equal(isStorefrontHost('clout.in'), false);
+assert.equal(isStorefrontHost('www.clout.in'), false);
 assert.equal(isStorefrontHost('localhost:3001'), false);
 assert.equal(isStorefrontHost('clout-pos-production.up.railway.app'), false);
 assert.equal(isStorefrontHost(undefined), false);

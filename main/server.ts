@@ -144,11 +144,11 @@ const SHOP_SEED_SHELLS: Array<{ pattern: RegExp; shell: string }> = [
 ];
 
 /** Hosts whose root `/` opens the customer storefront instead of the POS. */
-const STOREFRONT_HOSTS = new Set(['clout.in', 'www.clout.in']);
+const STOREFRONT_HOSTS = new Set(['cloutclothn.in', 'www.cloutclothn.in']);
 
 /**
  * True when the request's Host addresses the customer storefront domain.
- * Port is stripped so `clout.in:3001` matches in local development.
+ * Port is stripped so `cloutclothn.in:3001` matches in local development.
  */
 export function isStorefrontHost(hostHeader: string | undefined): boolean {
   const host = (hostHeader ?? '').split(':')[0].trim().toLowerCase();
