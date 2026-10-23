@@ -267,7 +267,7 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@googleapis/drive": "^22.0.0",
+    "@googleapis/drive": "^26.0.1",
     "@point-of-sale/codepage-encoder": "3.0.2",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
     "bcryptjs": "^3.0.3",
